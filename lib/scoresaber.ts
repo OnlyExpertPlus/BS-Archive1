@@ -41,7 +41,7 @@ export type ScoreSaberLeaderboard = {
 };
 
 export type ScoreSaberScore = {
-  id?: number;
+  id?: number | string;
   rank?: number;
   baseScore?: number;
   modifiedScore?: number;
@@ -70,12 +70,66 @@ export type ScoreSaberListMetadata = {
 };
 
 const BASE_URL = 'https://scoresaber.com/api';
+const SSR_API_URL = 'https://ssr-api.fascinated.cc';
 
-export function extractPlayerId(input: string): string {
+export function extractPlayerToken(input: string): string {
   const trimmed = input.trim();
   if (!trimmed) return '';
-  const match = trimmed.match(/(?:scoresaber\.com\/(?:u|users?|profile)\/)?(\d{15,20})/i);
-  return match?.[1] ?? trimmed;
+  const withoutQuery = trimmed.split('?')[0]?.split('#')[0] ?? trimmed;
+  const urlMatch = withoutQuery.match(/scoresaber\.com\/(?:u|users?|profile)\/([^/\s]+)/i);
+  if (urlMatch?.[1]) return decodeURIComponent(urlMatch[1]);
+  return trimmed.replace(/^@/, '');
+}
+
+export function extractPlayerId(input: string): string {
+  const token = extractPlayerToken(input);
+  const numeric = token.match(/\d{15,20}/);
+  return numeric?.[0] ?? token;
+}
+
+function findIdDeep(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findIdDeep(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ['id', 'playerId', 'scoreSaberId', 'scoresaberId', 'steamId']) {
+    const candidate = record[key];
+    if ((typeof candidate === 'string' || typeof candidate === 'number') && /^\d{15,20}$/.test(String(candidate))) {
+      return String(candidate);
+    }
+  }
+  for (const key of ['player', 'user', 'data', 'result', 'results', 'players']) {
+    const found = findIdDeep(record[key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+export async function resolvePlayerId(input: string): Promise<string> {
+  const token = extractPlayerToken(input);
+  if (!token) return '';
+  if (/^\d{15,20}$/.test(token)) return token;
+
+  const direct = await fetch(`${SSR_API_URL}/player/${encodeURIComponent(token)}`, { next: { revalidate: 60 } });
+  if (direct.ok) {
+    const data = await direct.json();
+    const id = findIdDeep(data);
+    if (id) return id;
+  }
+
+  const search = await fetch(`${SSR_API_URL}/player/search?query=${encodeURIComponent(token)}`, { next: { revalidate: 60 } });
+  if (search.ok) {
+    const data = await search.json();
+    const id = findIdDeep(data);
+    if (id) return id;
+  }
+
+  return token;
 }
 
 async function readJson<T>(url: string, message: string, revalidate = 300): Promise<T> {
@@ -86,14 +140,8 @@ async function readJson<T>(url: string, message: string, revalidate = 300): Prom
 
 function normalizePlayerScore(item: ScoreSaberRawPlayerScore): ScoreSaberScore | null {
   const maybeWrapped = item as { score?: Omit<ScoreSaberScore, 'leaderboard'>; leaderboard?: ScoreSaberLeaderboard };
-
-  // ScoreSaber player score endpoints commonly return { score: {...}, leaderboard: {...} }.
-  // Older/alternate shapes may already be flat. This function accepts both so ACC/PP do not become 0.
   if (maybeWrapped.score && maybeWrapped.leaderboard) {
-    return {
-      ...maybeWrapped.score,
-      leaderboard: maybeWrapped.leaderboard
-    };
+    return { ...maybeWrapped.score, leaderboard: maybeWrapped.leaderboard };
   }
 
   const maybeFlat = item as ScoreSaberScore;
@@ -104,7 +152,7 @@ function normalizePlayerScore(item: ScoreSaberRawPlayerScore): ScoreSaberScore |
 export async function getPlayer(playerId: string): Promise<ScoreSaberPlayer> {
   return readJson<ScoreSaberPlayer>(
     `${BASE_URL}/player/${playerId}/full`,
-    'ScoreSaber 플레이어 정보를 가져오지 못했습니다. ID 또는 URL을 확인해 주세요.',
+    'ScoreSaber 플레이어 정보를 가져오지 못했습니다. ID, 커스텀 ID 또는 URL을 확인해 주세요.',
     60
   );
 }
@@ -180,4 +228,16 @@ export function difficultyLabel(raw?: string): string {
   const parts = raw.split('_').filter(Boolean);
   const label = parts.find((p) => ['Easy', 'Normal', 'Hard', 'Expert', 'ExpertPlus'].includes(p));
   return label ?? parts[0] ?? raw;
+}
+
+export function beatSaverUrl(songHash?: string) {
+  return songHash ? `/api/beatsaver-redirect?hash=${encodeURIComponent(songHash)}` : '';
+}
+
+export function beatSaverDirectSearchUrl(songHash?: string) {
+  return songHash ? `https://beatsaver.com/search?q=${encodeURIComponent(songHash)}` : '';
+}
+
+export function scoreSaberLeaderboardUrl(leaderboardId?: number) {
+  return leaderboardId ? `https://scoresaber.com/leaderboard/${leaderboardId}` : '';
 }

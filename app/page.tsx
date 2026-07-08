@@ -1,24 +1,35 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { FormEvent, useState } from 'react';
+import Link from "next/link";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type AnalyzedScore = {
+  scoreId?: string;
+  leaderboardId?: number;
+  songHash?: string;
   song: string;
   mapper: string;
   difficulty: string;
   stars: number;
   accuracy: number;
   pp: number;
+  score?: number;
   timeSet: string;
   ranked: boolean;
   fullCombo: boolean;
   coverImage?: string;
+  beatsaverUrl?: string;
+  scoresaberUrl?: string;
   targetAccuracy?: number;
+  targetPp?: number;
+  estimatedGainPp?: number;
+  onePpAccGain?: number;
   reasons?: string[];
 };
 
 type Analysis = {
+  resolvedPlayerId?: string;
+  input?: string;
   player: {
     id?: string | number;
     name: string;
@@ -38,40 +49,65 @@ type Analysis = {
   top30: AnalyzedScore[];
   top50: AnalyzedScore[];
   recent: AnalyzedScore[];
-  starBuckets: { star: number; count: number; averageAccuracy: number; averagePp: number }[];
+  starBuckets: {
+    star: number;
+    count: number;
+    averageAccuracy: number;
+    averagePp: number;
+  }[];
   refreshCandidates: AnalyzedScore[];
+  tryCandidates: AnalyzedScore[];
+  onePpCandidates: AnalyzedScore[];
+  oldCandidates: AnalyzedScore[];
   ppNotice: string;
 };
 
 type Tier = {
   name: string;
-  group: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'master' | 'grandmaster';
+  group:
+    | "iron"
+    | "bronze"
+    | "silver"
+    | "gold"
+    | "platinum"
+    | "diamond"
+    | "master"
+    | "champion"
+    | "grandChampion"
+    | "legend";
 };
 
+const LAST_ANALYSIS_KEY = "bs-archive-last-analysis-v7";
+const LAST_INPUT_KEY = "bs-archive-last-player-input-v7";
+
 const tiers: Array<Tier & { min: number; max: number }> = [
-  { name: 'Bronze IV', group: 'bronze', min: 0, max: 1999 },
-  { name: 'Bronze III', group: 'bronze', min: 2000, max: 3999 },
-  { name: 'Bronze II', group: 'bronze', min: 4000, max: 4999 },
-  { name: 'Bronze I', group: 'bronze', min: 5000, max: 5999 },
-  { name: 'Silver IV', group: 'silver', min: 6000, max: 6999 },
-  { name: 'Silver III', group: 'silver', min: 7000, max: 7999 },
-  { name: 'Silver II', group: 'silver', min: 8000, max: 8999 },
-  { name: 'Silver I', group: 'silver', min: 9000, max: 9999 },
-  { name: 'Gold IV', group: 'gold', min: 10000, max: 10799 },
-  { name: 'Gold III', group: 'gold', min: 10800, max: 11599 },
-  { name: 'Gold II', group: 'gold', min: 11600, max: 12399 },
-  { name: 'Gold I', group: 'gold', min: 12400, max: 12999 },
-  { name: 'Platinum IV', group: 'platinum', min: 13000, max: 13499 },
-  { name: 'Platinum III', group: 'platinum', min: 13500, max: 13999 },
-  { name: 'Platinum II', group: 'platinum', min: 14000, max: 14499 },
-  { name: 'Platinum I', group: 'platinum', min: 14500, max: 14999 },
-  { name: 'Diamond III', group: 'diamond', min: 15000, max: 15299 },
-  { name: 'Diamond II', group: 'diamond', min: 15300, max: 15599 },
-  { name: 'Diamond I', group: 'diamond', min: 15600, max: 15999 },
-  { name: 'Master III', group: 'master', min: 16000, max: 16299 },
-  { name: 'Master II', group: 'master', min: 16300, max: 16599 },
-  { name: 'Master I', group: 'master', min: 16600, max: 16999 },
-  { name: 'Grandmaster', group: 'grandmaster', min: 17000, max: Number.POSITIVE_INFINITY }
+  { name: "IRON III", group: "iron", min: 0, max: 1999 },
+  { name: "IRON II", group: "iron", min: 2000, max: 2999 },
+  { name: "IRON I", group: "iron", min: 3000, max: 3999 },
+  { name: "BRONZE III", group: "bronze", min: 4000, max: 4999 },
+  { name: "BRONZE II", group: "bronze", min: 5000, max: 5999 },
+  { name: "BRONZE I", group: "bronze", min: 6000, max: 6999 },
+  { name: "SILVER III", group: "silver", min: 7000, max: 7999 },
+  { name: "SILVER II", group: "silver", min: 8000, max: 8999 },
+  { name: "SILVER I", group: "silver", min: 9000, max: 9999 },
+  { name: "GOLD III", group: "gold", min: 10000, max: 10599 },
+  { name: "GOLD II", group: "gold", min: 10600, max: 11199 },
+  { name: "GOLD I", group: "gold", min: 11200, max: 11799 },
+  { name: "PLATINUM III", group: "platinum", min: 11800, max: 12399 },
+  { name: "PLATINUM II", group: "platinum", min: 12400, max: 12999 },
+  { name: "PLATINUM I", group: "platinum", min: 13000, max: 13499 },
+  { name: "DIAMOND III", group: "diamond", min: 13500, max: 13999 },
+  { name: "DIAMOND II", group: "diamond", min: 14000, max: 14499 },
+  { name: "DIAMOND I", group: "diamond", min: 14500, max: 14999 },
+  { name: "MASTER", group: "master", min: 15000, max: 15999 },
+  { name: "CHAMPION", group: "champion", min: 16000, max: 16999 },
+  { name: "GRAND CHAMPION", group: "grandChampion", min: 17000, max: 17999 },
+  {
+    name: "LEGEND",
+    group: "legend",
+    min: 18000,
+    max: Number.POSITIVE_INFINITY,
+  },
 ];
 
 function getTier(pp: number): Tier {
@@ -79,42 +115,241 @@ function getTier(pp: number): Tier {
 }
 
 function dateText(value: string) {
-  if (!value) return '-';
-  return new Date(value).toLocaleDateString('ko-KR');
+  if (!value) return "-";
+  return new Date(value).toLocaleDateString("ko-KR");
 }
 
 function difficultyClass(difficulty: string) {
-  const key = difficulty.toLowerCase().replace(/\s|\+/g, '');
-  if (key === 'easy') return 'diffEasy';
-  if (key === 'normal') return 'diffNormal';
-  if (key === 'hard') return 'diffHard';
-  if (key === 'expert') return 'diffExpert';
-  return 'diffExpertPlus';
+  const key = difficulty.toLowerCase().replace(/\s|\+/g, "");
+  if (key === "easy") return "diffEasy";
+  if (key === "normal") return "diffNormal";
+  if (key === "hard") return "diffHard";
+  if (key === "expert") return "diffExpert";
+  return "diffExpertPlus";
 }
 
 function difficultyText(difficulty: string) {
-  return difficulty === 'ExpertPlus' ? 'Expert+' : difficulty;
+  return difficulty === "ExpertPlus" ? "Expert+" : difficulty;
+}
+
+function RecommendationCard({
+  score,
+  index,
+  mode,
+}: {
+  score: AnalyzedScore;
+  index: number;
+  mode: "refresh" | "try" | "old" | "onepp";
+}) {
+  const gainText =
+    score.estimatedGainPp && score.estimatedGainPp > 0
+      ? ` · 예상 증가 +${score.estimatedGainPp.toFixed(2)}pp`
+      : "";
+  const valueLine =
+    mode === "try"
+      ? `예상 기준 ${score.targetAccuracy ? `${score.targetAccuracy}%` : "-"} · 추정 ${score.pp ? `약 ${Math.round(score.pp)}pp` : `${score.stars.toFixed(2)}★`}${gainText}`
+      : mode === "onepp"
+        ? `현재 ${score.accuracy.toFixed(2)}% → +1pp 기준 ${score.targetAccuracy ?? "-"}% · +${score.onePpAccGain ?? "-"}%p`
+        : `현재 ${score.accuracy.toFixed(2)}%${score.targetAccuracy ? ` → 목표 ${score.targetAccuracy}%` : ""} · ${score.pp ? `${score.pp.toFixed(2)}pp` : "PP -"}${score.targetPp ? ` → 추정 ${Math.round(score.targetPp)}pp` : ""}${gainText}`;
+
+  return (
+    <article className="recommendTile">
+      <span className="rankBadge soft">#{index + 1}</span>
+      <div className="recommendCover">
+        {score.coverImage ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={score.coverImage} alt="" />
+        ) : (
+          <div className="coverFallback">♪</div>
+        )}
+      </div>
+      <div className="recommendBody">
+        <b>{score.song}</b>
+        <p>
+          <span
+            className={`difficultyText ${difficultyClass(score.difficulty)}`}
+          >
+            {difficultyText(score.difficulty)}
+          </span>{" "}
+          · {score.mapper || "-"}
+        </p>
+        <p className="recommendValue">{valueLine}</p>
+        <p className="muted">{score.reasons?.join(" · ")}</p>
+      </div>
+      <div className="recommendActions">
+        {score.beatsaverUrl && (
+          <a href={score.beatsaverUrl} target="_blank" rel="noreferrer">
+            BeatSaver
+          </a>
+        )}
+        {score.scoresaberUrl && (
+          <a href={score.scoresaberUrl} target="_blank" rel="noreferrer">
+            ScoreSaber
+          </a>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function RecommendationSection({
+  title,
+  description,
+  scores,
+  mode,
+}: {
+  title: string;
+  description: string;
+  scores: AnalyzedScore[];
+  mode: "refresh" | "try" | "old" | "onepp";
+}) {
+  return (
+    <section className="panel recommendationPanel">
+      <div className="sectionHeader">
+        <div>
+          <p className="eyebrow">Recommendation</p>
+          <h2>{title}</h2>
+          <p className="muted">{description}</p>
+        </div>
+      </div>
+      {scores.length ? (
+        <div className="recommendGrid">
+          {scores.map((s, idx) => (
+            <RecommendationCard
+              key={`${s.song}-${s.difficulty}-${idx}`}
+              score={s}
+              index={idx}
+              mode={mode}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="emptyState">
+          실제 ScoreSaber 데이터로 계산할 수 있는 추천 후보가 아직 없습니다.
+        </div>
+      )}
+    </section>
+  );
+}
+
+type RecommendationTabKey = "refresh" | "try" | "old";
+
+function RecommendationTabs({ analysis }: { analysis: Analysis }) {
+  const [active, setActive] = useState<RecommendationTabKey>("refresh");
+  const tabs = useMemo(
+    () => [
+      {
+        key: "refresh" as const,
+        title: "기록 갱신 추천 TOP 10",
+        short: "기록 갱신",
+        description:
+          "이미 친 곡 중에서 현재 기록 대비 갱신 여지가 커 보이는 곡입니다.",
+        scores: analysis.refreshCandidates,
+        mode: "refresh" as const,
+      },
+      {
+        key: "try" as const,
+        title: "미기록 PP 효율곡 TOP 10",
+        short: "미기록 PP 효율",
+        description:
+          "아직 기록이 없는 ScoreSaber 랭크맵 중에서 현재 기록 수준 기준으로 PP 반영 가능성이 높은 곡입니다.",
+        scores: analysis.tryCandidates,
+        mode: "try" as const,
+      },
+      {
+        key: "old" as const,
+        title: "오래된 기록 갱신 후보 TOP 10",
+        short: "오래된 기록",
+        description:
+          "90일 이상 지난 기록 중 지금 다시 치면 갱신 가능성이 있어 보이는 곡입니다.",
+        scores: analysis.oldCandidates,
+        mode: "old" as const,
+      },
+    ],
+    [analysis],
+  );
+
+  const selected = tabs.find((tab) => tab.key === active) ?? tabs[0];
+
+  return (
+    <section className="panel recommendationPanel recommendationTabsPanel">
+      <div className="sectionHeader recommendationTabsHeader">
+        <div>
+          <p className="eyebrow">Recommendation</p>
+          <h2>추천곡</h2>
+          <p className="muted">
+            원하는 추천 기준을 선택해서 TOP 10만 따로 확인할 수 있습니다.
+          </p>
+          {analysis.ppNotice && <p className="ppNotice">{analysis.ppNotice}</p>}
+        </div>
+      </div>
+      <div
+        className="recommendTabButtons"
+        role="tablist"
+        aria-label="추천 카테고리"
+      >
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            className={active === tab.key ? "active" : ""}
+            onClick={() => setActive(tab.key)}
+          >
+            <span>{tab.short}</span>
+            <small>{tab.scores.length}개</small>
+          </button>
+        ))}
+      </div>
+      <RecommendationSection
+        title={selected.title}
+        description={selected.description}
+        scores={selected.scores}
+        mode={selected.mode}
+      />
+    </section>
+  );
 }
 
 export default function HomePage() {
-  const [player, setPlayer] = useState('');
+  const [player, setPlayer] = useState("");
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    // 메인 입력창은 처음 들어왔을 때 빈칸으로 둡니다.
+    // 최근 분석 결과는 같은 탭에서 기록 저장소를 오갔을 때만 복원합니다.
+    const sessionAnalysis = sessionStorage.getItem(LAST_ANALYSIS_KEY);
+    if (sessionAnalysis) {
+      try {
+        setAnalysis(JSON.parse(sessionAnalysis));
+      } catch {
+        sessionStorage.removeItem(LAST_ANALYSIS_KEY);
+      }
+    }
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
-    setError('');
-    setAnalysis(null);
+    setError("");
 
     try {
-      const res = await fetch(`/api/analyze?player=${encodeURIComponent(player)}`);
+      const res = await fetch(
+        `/api/analyze?player=${encodeURIComponent(player)}`,
+      );
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? '분석 중 오류가 발생했습니다.');
+      if (!res.ok)
+        throw new Error(data.error ?? "분석 중 오류가 발생했습니다.");
       setAnalysis(data);
+      localStorage.setItem(LAST_INPUT_KEY, player);
+      // 분석 결과 전체는 용량이 커질 수 있어 같은 탭 복원용 sessionStorage에만 저장합니다.
+      // 기록 저장소 자동 연결도 이 sessionStorage 값만 사용하므로, 새 접속 시 화면이 깨끗하게 시작됩니다.
+      sessionStorage.setItem(LAST_ANALYSIS_KEY, JSON.stringify(data));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.');
+      setError(
+        err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다.",
+      );
     } finally {
       setLoading(false);
     }
@@ -124,30 +359,56 @@ export default function HomePage() {
 
   return (
     <main className="page">
-      <header className="hero">
+      <nav className="topNav">
+        <Link className="logoMark" href="/">
+          BS-Analyzer
+        </Link>
         <div>
-          <p className="eyebrow">비트세이버 기록 저장소</p>
-          <h1 className="brandTitle">BS-Archive</h1>
-          <p className="brandSub">비트세이버 기록 저장소</p>
-          <p className="heroText">ScoreSaber 기록을 가져와 성과표, 약점, 갱신 후보를 보여주는 한국어 비트세이버 기록 분석기입니다.</p>
+          <a href="#analyze">Dashboard</a>
+          <Link href="/logbook">BS-Archive</Link>
+          <Link href="/intro">소개</Link>
         </div>
-        <div className="heroActions">
-          <Link className="navButton" href="/intro">소개</Link>
-          <Link className="navButton" href="/logbook">랭크맵 기록장</Link>
+      </nav>
+
+      <header className="hero heroV7">
+        <div className="heroMain">
+          <h1 className="brandTitle">Dashboard</h1>
+          <p className="heroText">
+            ScoreSaber 기록을 분석해 성과표, 추천곡, 난이도별 통계를 한눈에
+            정리해주는 한국어 비트세이버 분석 대시보드입니다.
+          </p>
+          <form id="analyze" onSubmit={handleSubmit} className="heroSearch">
+            <input
+              value={player}
+              onChange={(e) => setPlayer(e.target.value)}
+              placeholder="ScoreSaber ID, 커스텀 ID, 또는 프로필 URL 입력"
+            />
+            <button disabled={loading}>
+              {loading ? "분석 중..." : "분석하기"}
+            </button>
+          </form>
+          {error && <p className="error">{error}</p>}
         </div>
       </header>
 
-      <section className="panel">
-        <form onSubmit={handleSubmit} className="searchForm">
-          <input
-            value={player}
-            onChange={(e) => setPlayer(e.target.value)}
-            placeholder="ScoreSaber ID 또는 https://scoresaber.com/u/..."
-          />
-          <button disabled={loading}>{loading ? '분석 중...' : '분석하기'}</button>
-        </form>
-        {error && <p className="error">{error}</p>}
-      </section>
+      {!analysis && (
+        <section className="introCards">
+          <article>
+            <b>성과표 분석</b>
+            <p>총 PP, 랭킹, 평균 ACC와 Top 30 기록을 카드형으로 정리합니다.</p>
+          </article>
+          <article>
+            <b>추천곡 제안</b>
+            <p>갱신 후보, 미기록 PP 효율곡, 오래된 기록을 탭으로 보여줍니다.</p>
+          </article>
+          <article>
+            <b>BS-Archive</b>
+            <p>
+              브라우저에 유저별 기록을 분리 저장하고 L/R 평균 컷, 메모, JSON 백업을 지원합니다.
+            </p>
+          </article>
+        </section>
+      )}
 
       {analysis && tier && (
         <>
@@ -162,68 +423,96 @@ export default function HomePage() {
                 )}
               </div>
               <div>
-                <p className="eyebrow">Player</p>
+                <p className="eyebrow">최근 분석 유지 중</p>
                 <div className="playerNameLine">
                   <h2>{analysis.player.name}</h2>
-                  <span className={`tierBadge tier-${tier.group}`}>{tier.name}</span>
+                  <span className={`tierBadge tier-${tier.group}`}>
+                    {tier.name}
+                  </span>
                 </div>
-                <p>{analysis.player.country ?? '-'} · 랭크맵 플레이 {analysis.player.rankedPlayCount.toLocaleString()}회</p>
+                <p>
+                  {analysis.player.country ?? "-"} · ID{" "}
+                  {analysis.resolvedPlayerId ?? analysis.player.id ?? "-"} ·
+                  랭크맵 플레이{" "}
+                  {analysis.player.rankedPlayCount.toLocaleString()}회
+                </p>
               </div>
             </div>
-            <div className="miniStats">
-              <span>최고 ACC {analysis.summary.bestAccuracy}%</span>
-              <span>최고 PP {analysis.summary.bestPp}pp</span>
-              <span>Top 기록 {analysis.summary.rankedMapCount}개 분석</span>
-            </div>
+
           </section>
 
-          <section className="grid cards4">
-            <article className="statCard"><span>총 PP</span><strong>{analysis.player.pp.toLocaleString()}</strong></article>
-            <article className="statCard"><span>글로벌 랭킹</span><strong>#{analysis.player.rank?.toLocaleString()}</strong></article>
-            <article className="statCard"><span>국가 랭킹</span><strong>#{analysis.player.countryRank?.toLocaleString()}</strong></article>
-            <article className="statCard"><span>평균 정확도</span><strong>{analysis.summary.averageAccuracy}%</strong></article>
+          <section className="grid cards5">
+            <article className="statCard">
+              <span>총 PP</span>
+              <strong>{analysis.player.pp.toLocaleString()}</strong>
+            </article>
+            <article className="statCard">
+              <span>글로벌 랭킹</span>
+              <strong>#{analysis.player.rank?.toLocaleString()}</strong>
+            </article>
+            <article className="statCard">
+              <span>국가 랭킹</span>
+              <strong>#{analysis.player.countryRank?.toLocaleString()}</strong>
+            </article>
+            <article className="statCard">
+              <span>평균 정확도</span>
+              <strong>{analysis.summary.averageAccuracy}%</strong>
+            </article>
+            <article className="statCard">
+              <span>Top PP</span>
+              <strong>{analysis.summary.bestPp.toLocaleString()}pp</strong>
+            </article>
           </section>
 
-          <section className="panel warningPanel">
-            <strong>PP 계산 안내</strong>
-            <p>{analysis.ppNotice}</p>
-          </section>
+          <RecommendationTabs analysis={analysis} />
 
           <section className="panel">
-            <h2>Top 30 성과표</h2>
-            <p className="muted">ScoreSaber 실제 PP 기준 Top 30 기록입니다. 카드 디자인은 랭크맵 기록장과 같은 형식을 사용합니다.</p>
+            <div className="sectionHeader">
+              <div>
+                <p className="eyebrow">Achievement Board</p>
+                <h2>Top 30 성과표</h2>
+                <p className="muted">
+                  ScoreSaber 실제 PP 기준 Top 30 기록입니다.
+                </p>
+              </div>
+            </div>
             <div className="topScoreGrid">
               {analysis.top30.map((s, idx) => (
-                <article className="mapCard topScoreCard recorded" key={`${s.song}-${s.difficulty}-${idx}`}>
+                <article
+                  className="mapCard topScoreCard recorded"
+                  key={`${s.song}-${s.difficulty}-${idx}`}
+                >
                   <span className="rankBadge">#{idx + 1}</span>
-                  <div className={`accSlot ${s.accuracy >= 100 ? 'perfectRecord' : s.fullCombo ? 'fcRecord' : 'normalRecord'}`}>{s.accuracy.toFixed(2)}</div>
+                  <div
+                    className={`accSlot ${s.accuracy >= 100 ? "perfectRecord" : s.fullCombo ? "fcRecord" : "normalRecord"}`}
+                  >
+                    {s.accuracy.toFixed(2)}
+                  </div>
                   <div className="coverWrap">
                     {s.coverImage ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={s.coverImage} alt="" />
-                    ) : <div className="coverFallback">♪</div>}
-                    <span className={`starBadge ${difficultyClass(s.difficulty)}`}>{s.stars.toFixed(2)}★</span>
+                    ) : (
+                      <div className="coverFallback">♪</div>
+                    )}
+                    <span
+                      className={`starBadge ${difficultyClass(s.difficulty)}`}
+                    >
+                      {s.stars.toFixed(2)}★
+                    </span>
                   </div>
                   <b>{s.song}</b>
-                  <small><span className={`difficultyText ${difficultyClass(s.difficulty)}`}>{difficultyText(s.difficulty)}</span> · {s.mapper}</small>
-                  <small className="ppLine">{s.pp.toFixed(2)}pp · {dateText(s.timeSet)}</small>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2>갱신 추천 TOP 5</h2>
-            <p className="muted">현재는 1pp 효율 계산이 아니라, Top 기록 기준으로 갱신 여지가 커 보이는 곡을 추천합니다.</p>
-            <div className="recommendList">
-              {analysis.refreshCandidates.map((s, idx) => (
-                <article className="recommendCard" key={`${s.song}-${idx}`}>
-                  <div>
-                    <b>{idx + 1}. {s.song}</b>
-                    <p>{s.stars}★ · {s.difficulty} · 현재 {s.accuracy}% → 목표 {s.targetAccuracy}%</p>
-                    <p className="muted">{s.reasons?.join(' · ')}</p>
-                  </div>
-                  <span className={s.fullCombo ? 'fcPill' : 'pill'}>{s.fullCombo ? 'FC 기록' : '갱신 후보'}</span>
+                  <small>
+                    <span
+                      className={`difficultyText ${difficultyClass(s.difficulty)}`}
+                    >
+                      {difficultyText(s.difficulty)}
+                    </span>{" "}
+                    · {s.mapper}
+                  </small>
+                  <small className="ppLine">
+                    {s.pp.toFixed(2)}pp · {dateText(s.timeSet)}
+                  </small>
                 </article>
               ))}
             </div>
@@ -231,12 +520,24 @@ export default function HomePage() {
 
           <section className="grid twoCols">
             <div className="panel">
-              <h2>별 개수별 약점 분석</h2>
+              <h2>난이도 구간별 기록 통계</h2>
               <table>
-                <thead><tr><th>구간</th><th>기록 수</th><th>평균 ACC</th><th>평균 PP</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>구간</th>
+                    <th>기록 수</th>
+                    <th>평균 ACC</th>
+                    <th>평균 PP</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {analysis.starBuckets.map((b) => (
-                    <tr key={b.star}><td>{b.star}★대</td><td>{b.count}</td><td>{b.averageAccuracy}%</td><td>{b.averagePp}pp</td></tr>
+                    <tr key={b.star}>
+                      <td>{b.star}★대</td>
+                      <td>{b.count}</td>
+                      <td>{b.averageAccuracy}%</td>
+                      <td>{b.averagePp}pp</td>
+                    </tr>
                   ))}
                 </tbody>
               </table>
@@ -245,10 +546,22 @@ export default function HomePage() {
             <div className="panel">
               <h2>최근 기록</h2>
               <table>
-                <thead><tr><th>날짜</th><th>곡</th><th>ACC</th><th>PP</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>날짜</th>
+                    <th>곡</th>
+                    <th>ACC</th>
+                    <th>PP</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {analysis.recent.slice(0, 10).map((s, idx) => (
-                    <tr key={`${s.song}-${idx}`}><td>{dateText(s.timeSet)}</td><td>{s.song}</td><td>{s.accuracy}%</td><td>{s.pp}pp</td></tr>
+                    <tr key={`${s.song}-${idx}`}>
+                      <td>{dateText(s.timeSet)}</td>
+                      <td>{s.song}</td>
+                      <td>{s.accuracy}%</td>
+                      <td>{s.pp}pp</td>
+                    </tr>
                   ))}
                 </tbody>
               </table>
