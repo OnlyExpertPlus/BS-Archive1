@@ -72,4 +72,7 @@ BS-Archive: http://localhost:3000/logbook
 주의 사항
 
 추천곡의 추정 PP와 예상 증가량은 ScoreSaber PP 커브 기반 계산값입니다.
+
 실제 ScoreSaber 반영 PP, 기록 순위, 내부 반올림 방식에 따라 실제 결과와 차이가 있을 수 있습니다.
+실제 ScoreSaber 반영 PP, 기록 순위, 내부 반올림 방식에 따라 실제 결과와 차이가 있을 수 있습니다.
+
