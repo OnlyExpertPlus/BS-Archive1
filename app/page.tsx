@@ -27,6 +27,15 @@ type AnalyzedScore = {
   reasons?: string[];
 };
 
+type TargetCandidate = AnalyzedScore & {
+  targetDelta: number;
+  targetAccuracy: number;
+  targetPp: number;
+  estimatedGainPp: number;
+  pp: number;
+  reasons: string[];
+};
+
 type Analysis = {
   resolvedPlayerId?: string;
   input?: string;
@@ -379,7 +388,7 @@ function buildTargetCandidate(
   score: AnalyzedScore,
   targetGain: number,
   currentPps: number[],
-) {
+): TargetCandidate | null {
   if (!score.stars || !currentPps.length) return null;
 
   const baseAcc = Math.max(82, Math.min(99.9, score.targetAccuracy ?? 90));
@@ -428,7 +437,7 @@ function targetFilteredScores(
 ) {
   return scores
     .map((score) => buildTargetCandidate(score, targetGain, currentPps))
-    .filter((score): score is AnalyzedScore & { targetDelta: number } => Boolean(score))
+    .filter((score): score is TargetCandidate => score !== null)
     .sort(
       (a, b) =>
         a.targetDelta - b.targetDelta ||

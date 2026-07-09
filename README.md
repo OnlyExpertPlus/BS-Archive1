@@ -1,4 +1,4 @@
-# BS-Archive v1.2 (internal build v7.4.8)
+# BS-Archive v1.2 (internal build v7.4.8-buildfix)
 
 Beat Saber / ScoreSaber 기록 분석과 랭크맵 기록 관리를 위한 한국어 기록 도구입니다.
 
@@ -74,3 +74,8 @@ npm run dev
 
 - 미기록 추천곡 목표 증가량 슬라이더의 적용 버튼을 제거했습니다.
 - 슬라이더를 움직이면 추천곡이 즉시 갱신됩니다.
+
+
+## 배포 빌드 수정
+
+- Vercel 배포 중 발생하던 TargetCandidate 타입 오류를 수정했습니다.
