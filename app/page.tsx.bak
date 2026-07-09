@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type AnalyzedScore = {
   scoreId?: string;
@@ -59,7 +59,6 @@ type Analysis = {
   tryCandidates: AnalyzedScore[];
   onePpCandidates: AnalyzedScore[];
   oldCandidates: AnalyzedScore[];
-  ppRecords?: number[];
   ppNotice: string;
 };
 
@@ -283,184 +282,55 @@ function RecommendationSection({
         </div>
       ) : (
         <div className="emptyState">
-          현재 목표 PP 증가량을 달성할 수 있는 미기록 추천곡이 없습니다. 목표 증가량을 낮추거나 기록 갱신 추천을 확인해 보세요.
+          조건에 맞는 추천 후보가 없습니다. 목표 PP 증가량을 낮추거나 다른 추천 탭을 확인해 보세요.
         </div>
       )}
     </section>
   );
 }
 
+function targetFilteredScores(scores: AnalyzedScore[], targetGain: number) {
+  const tolerance = targetGain <= 5 ? 3 : Math.max(5, Math.round(targetGain * 0.25));
+  const minGain = targetGain === 0 ? 0 : Math.max(1, targetGain * 0.5);
 
-function clientRound(value: number, digits = 2): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-const CLIENT_STAR_PP = 42.1138;
-const CLIENT_SCORE_SABER_CURVE = (
-  [
-    [1, 5.36739428289063],
-    [0.9995, 5.01954359587479],
-    [0.999, 4.7154706464162],
-    [0.99825, 4.32502738358955],
-    [0.9975, 3.99679360676332],
-    [0.99625, 3.55261453375554],
-    [0.995, 3.2022017597338],
-    [0.99375, 2.9190155639255],
-    [0.9925, 2.68566785659272],
-    [0.99125, 2.49029057941069],
-    [0.99, 2.32450628214992],
-    [0.9875, 2.05894715905274],
-    [0.985, 1.85638876936471],
-    [0.9825, 1.69753624864754],
-    [0.98, 1.57024100555322],
-    [0.9775, 1.46647263992895],
-    [0.975, 1.38071027431051],
-    [0.9725, 1.30903330650576],
-    [0.97, 1.24858077599573],
-    [0.965, 1.1552120359501],
-    [0.96, 1.08718835738505],
-    [0.955, 1.0388633331419],
-    [0.95, 1],
-    [0.94, 0.941736298058024],
-    [0.93, 0.903999407186574],
-    [0.92, 0.872871034144885],
-    [0.91, 0.848837598812447],
-    [0.9, 0.825756123560842],
-    [0.875, 0.781693456029605],
-    [0.85, 0.746229066414319],
-    [0.825, 0.715046566345427],
-    [0.8, 0.687226886295028],
-    [0.75, 0.645180821010144],
-    [0.7, 0.612556595911495],
-    [0.65, 0.586601001276758],
-    [0.6, 0.182232336674391],
-    [0, 0],
-  ] as Array<[number, number]>
-).sort((a, b) => a[0] - b[0]);
-
-function clientCurveMultiplier(accRatio: number) {
-  const acc = Math.max(0, Math.min(1, accRatio));
-  for (let i = 0; i < CLIENT_SCORE_SABER_CURVE.length - 1; i += 1) {
-    const [x1, y1] = CLIENT_SCORE_SABER_CURVE[i];
-    const [x2, y2] = CLIENT_SCORE_SABER_CURVE[i + 1];
-    if (acc >= x1 && acc <= x2) {
-      if (x1 === x2) return y1;
-      const t = (acc - x1) / (x2 - x1);
-      return y1 + (y2 - y1) * t;
-    }
-  }
-  return acc <= 0 ? 0 : CLIENT_SCORE_SABER_CURVE[CLIENT_SCORE_SABER_CURVE.length - 1][1];
-}
-
-function clientScoreSaberPp(stars: number, accPercent: number) {
-  if (!stars || stars <= 0 || !accPercent || accPercent <= 0) return 0;
-  return clientRound(stars * CLIENT_STAR_PP * clientCurveMultiplier(accPercent / 100), 2);
-}
-
-function clientWeightedTotal(pps: number[]) {
-  return pps
-    .filter((pp) => Number.isFinite(pp) && pp > 0)
-    .sort((a, b) => b - a)
-    .reduce((sum, pp, index) => sum + pp * Math.pow(0.965, index), 0);
-}
-
-function clientGainIfAdded(currentPps: number[], candidatePp: number) {
-  if (!candidatePp || candidatePp <= 0 || !currentPps.length) return 0;
-  const base = currentPps
-    .filter((pp) => Number.isFinite(pp) && pp > 0)
-    .sort((a, b) => b - a);
-  const limit = base.length;
-  const next = [...base, candidatePp].sort((a, b) => b - a).slice(0, limit);
-  return clientRound(clientWeightedTotal(next) - clientWeightedTotal(base), 2);
-}
-
-function buildTargetCandidate(
-  score: AnalyzedScore,
-  targetGain: number,
-  currentPps: number[],
-) {
-  if (!score.stars || !currentPps.length) return null;
-
-  const baseAcc = Math.max(82, Math.min(99.9, score.targetAccuracy ?? 90));
-  const maxAcc = 99.9;
-  const maxPp = clientScoreSaberPp(score.stars, maxAcc);
-  const maxGain = clientGainIfAdded(currentPps, maxPp);
-  const minimumUsefulGain = Math.max(1, targetGain - 1);
-
-  if (maxGain < minimumUsefulGain) return null;
-
-  let low = baseAcc;
-  let high = maxAcc;
-  for (let i = 0; i < 28; i += 1) {
-    const mid = (low + high) / 2;
-    const midGain = clientGainIfAdded(currentPps, clientScoreSaberPp(score.stars, mid));
-    if (midGain >= targetGain) high = mid;
-    else low = mid;
-  }
-
-  const targetAccuracy = clientRound(high, 2);
-  const targetPp = clientScoreSaberPp(score.stars, targetAccuracy);
-  const estimatedGainPp = clientGainIfAdded(currentPps, targetPp);
-  if (estimatedGainPp < 1) return null;
-
-  const delta = clientRound(estimatedGainPp - targetGain, 1);
-  const sign = delta > 0 ? "+" : "";
-
-  return {
-    ...score,
-    targetAccuracy,
-    pp: targetPp,
-    targetPp,
-    estimatedGainPp,
-    targetDelta: Math.abs(delta),
-    reasons: [
-      ...((score.reasons ?? []).filter((reason) => !reason.startsWith("목표 "))),
-      `목표 ${targetGain}pp 대비 ${sign}${delta}pp`,
-    ],
-  };
-}
-
-function targetFilteredScores(
-  scores: AnalyzedScore[],
-  targetGain: number,
-  currentPps: number[],
-) {
   return scores
-    .map((score) => buildTargetCandidate(score, targetGain, currentPps))
-    .filter((score): score is AnalyzedScore & { targetDelta: number } => Boolean(score))
+    .filter((score) => Number.isFinite(score.estimatedGainPp ?? NaN))
+    .map((score) => {
+      const gain = score.estimatedGainPp ?? 0;
+      const delta = Math.round((gain - targetGain) * 10) / 10;
+      const sign = delta > 0 ? "+" : "";
+      return {
+        ...score,
+        targetDelta: Math.abs(delta),
+        reasons: [
+          ...(score.reasons ?? []),
+          `목표 ${targetGain}pp 대비 ${sign}${delta}pp`,
+        ],
+      };
+    })
+    .filter((score) => {
+      const gain = score.estimatedGainPp ?? 0;
+      return gain >= minGain && score.targetDelta <= tolerance;
+    })
     .sort(
       (a, b) =>
         a.targetDelta - b.targetDelta ||
-        (a.targetAccuracy ?? 100) - (b.targetAccuracy ?? 100) ||
         (b.estimatedGainPp ?? 0) - (a.estimatedGainPp ?? 0),
-    );
-}
-
-function getDefaultTargetGain(totalPp: number) {
-  if (totalPp <= 10000) return 3;
-  if (totalPp <= 13000) return 5;
-  if (totalPp <= 15000) return 8;
-  if (totalPp <= 16000) return 10;
-  if (totalPp <= 17000) return 12;
-  return 15;
+    )
+    .slice(0, 10);
 }
 
 type RecommendationTabKey = "refresh" | "try" | "old";
 
 function RecommendationTabs({ analysis }: { analysis: Analysis }) {
   const [active, setActive] = useState<RecommendationTabKey>("refresh");
-  const defaultTargetGain = getDefaultTargetGain(analysis.player.pp);
-  const [targetGainDraft, setTargetGainDraft] = useState(defaultTargetGain);
-  const [targetGain, setTargetGain] = useState<number | null>(defaultTargetGain);
-  const [tryPage, setTryPage] = useState(0);
+  const [targetGainDraft, setTargetGainDraft] = useState(10);
+  const [targetGain, setTargetGain] = useState<number | null>(null);
 
   useEffect(() => {
-    const nextDefault = getDefaultTargetGain(analysis.player.pp);
-    setTargetGain(nextDefault);
-    setTargetGainDraft(nextDefault);
-    setTryPage(0);
-  }, [analysis.resolvedPlayerId, analysis.player.pp]);
+    setTargetGain(null);
+    setTargetGainDraft(10);
+  }, [analysis.resolvedPlayerId]);
   const tabs = useMemo(
     () => [
       {
@@ -474,8 +344,8 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
       },
       {
         key: "try" as const,
-        title: "미기록 추천곡 TOP 10",
-        short: "미기록 추천",
+        title: "미기록 PP 효율곡 TOP 10",
+        short: "미기록 PP 효율",
         description:
           "아직 기록이 없는 ScoreSaber 랭크맵 중에서 현재 기록 수준 기준으로 PP 반영 가능성이 높은 곡입니다.",
         scores: analysis.tryCandidates,
@@ -495,22 +365,13 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
   );
 
   const selected = tabs.find((tab) => tab.key === active) ?? tabs[0];
-  const ppRecords = analysis.ppRecords?.length
-    ? analysis.ppRecords
-    : analysis.top50.map((score) => score.pp).filter(Boolean);
-  const filteredTryScores =
-    active === "try" && targetGain !== null
-      ? targetFilteredScores(selected.scores, targetGain, ppRecords)
-      : selected.scores;
-  const tryPageCount = Math.max(1, Math.ceil(filteredTryScores.length / 10));
-  const safeTryPage = Math.min(tryPage, tryPageCount - 1);
   const visibleScores =
     active === "try" && targetGain !== null
-      ? filteredTryScores.slice(safeTryPage * 10, safeTryPage * 10 + 10)
+      ? targetFilteredScores(selected.scores, targetGain)
       : selected.scores.slice(0, 10);
   const visibleDescription =
     active === "try" && targetGain !== null
-      ? `${selected.description} 현재 목표 +${targetGain}pp를 달성하기 위한 예상 ACC를 다시 계산해 추천합니다.`
+      ? `${selected.description} 현재 목표는 예상 총 PP 증가 +${targetGain}pp 근처의 조건에 맞는 곡만 보여줍니다.`
       : selected.description;
 
   return (
@@ -535,9 +396,10 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
             key={tab.key}
             type="button"
             className={active === tab.key ? "active" : ""}
-            onClick={() => { setActive(tab.key); setTryPage(0); }}
+            onClick={() => setActive(tab.key)}
           >
             <span>{tab.short}</span>
+            <small>{tab.scores.length}개</small>
           </button>
         ))}
       </div>
@@ -545,31 +407,22 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
         <div className="targetGainBox">
           <div>
             <b>목표 총 PP 증가량</b>
-            <p>유저 PP 수준에 맞춘 기본값에서 시작하고, 슬라이더를 움직이면 추천곡이 바로 바뀝니다.</p>
+            <p>원하는 예상 증가량 근처의 미기록곡을 다시 골라봅니다.</p>
           </div>
           <div className="targetGainControl">
             <input
               type="range"
-              min="1"
+              min="0"
               max="50"
               step="1"
               value={targetGainDraft}
-              onChange={(e) => {
-                const next = Number(e.target.value);
-                setTargetGainDraft(next);
-                setTargetGain(next);
-                setTryPage(0);
-              }}
+              onChange={(e) => setTargetGainDraft(Number(e.target.value))}
             />
             <span>+{targetGainDraft}pp</span>
-            <button
-              type="button"
-              onClick={() => {
-                setTargetGain(defaultTargetGain);
-                setTargetGainDraft(defaultTargetGain);
-                setTryPage(0);
-              }}
-            >
+            <button type="button" onClick={() => setTargetGain(targetGainDraft)}>
+              적용
+            </button>
+            <button type="button" onClick={() => setTargetGain(null)}>
               초기화
             </button>
           </div>
@@ -581,63 +434,7 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
         scores={visibleScores}
         mode={selected.mode}
       />
-      {active === "try" && filteredTryScores.length > 10 && (
-        <div className="candidatePager">
-          <span>
-            {safeTryPage + 1} / {tryPageCount} 페이지
-          </span>
-          <button
-            type="button"
-            onClick={() => setTryPage((prev) => (prev + 1) % tryPageCount)}
-          >
-            다른 후보 보기
-          </button>
-        </div>
-      )}
     </section>
-  );
-}
-
-function TopScoreCard({
-  s,
-  idx,
-}: {
-  s: AnalyzedScore;
-  idx: number;
-}) {
-  return (
-    <article
-      className="mapCard topScoreCard recorded"
-      key={`${s.song}-${s.difficulty}-${idx}`}
-    >
-      <span className="rankBadge">#{idx + 1}</span>
-      <div
-        className={`accSlot ${s.accuracy >= 100 ? "perfectRecord" : s.fullCombo ? "fcRecord" : "normalRecord"}`}
-      >
-        {s.accuracy.toFixed(2)}
-      </div>
-      <div className="coverWrap">
-        {s.coverImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={s.coverImage} alt="" />
-        ) : (
-          <div className="coverFallback">♪</div>
-        )}
-        <span className={`starBadge ${difficultyClass(s.difficulty)}`}>
-          {s.stars.toFixed(2)}★
-        </span>
-      </div>
-      <b>{s.song}</b>
-      <small>
-        <span className={`difficultyText ${difficultyClass(s.difficulty)}`}>
-          {difficultyText(s.difficulty)}
-        </span>{" "}
-        · {s.mapper}
-      </small>
-      <small className="ppLine">
-        {s.pp.toFixed(2)}pp · {dateText(s.timeSet)}
-      </small>
-    </article>
   );
 }
 
@@ -646,8 +443,6 @@ export default function HomePage() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [exporting, setExporting] = useState(false);
-  const boardExportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // 메인 입력창은 처음 들어왔을 때 빈칸으로 둡니다.
@@ -685,35 +480,6 @@ export default function HomePage() {
       );
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function handleExportTop30Image() {
-    if (!analysis || !boardExportRef.current) return;
-    setExporting(true);
-    setError("");
-    try {
-      const { toPng } = await import("html-to-image");
-      const dataUrl = await toPng(boardExportRef.current, {
-        cacheBust: true,
-        pixelRatio: 2,
-        backgroundColor: "#070a13",
-      });
-      const link = document.createElement("a");
-      const playerId = String(analysis.resolvedPlayerId ?? analysis.player.id ?? analysis.player.name);
-      link.href = dataUrl;
-      link.download = `${safeFileName(`bs-archive-top30-${playerId}`)}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? `이미지 저장 중 오류가 발생했습니다. ${err.message}`
-          : "이미지 저장 중 오류가 발생했습니다.",
-      );
-    } finally {
-      setExporting(false);
     }
   }
 
@@ -761,7 +527,7 @@ export default function HomePage() {
           </article>
           <article>
             <b>추천곡 제안</b>
-            <p>갱신 후보, 미기록 추천곡, 오래된 기록을 탭으로 보여줍니다.</p>
+            <p>갱신 후보, 미기록 PP 효율곡, 오래된 기록을 탭으로 보여줍니다.</p>
           </article>
           <article>
             <b>BS-Archive</b>
@@ -800,6 +566,7 @@ export default function HomePage() {
                 </p>
               </div>
             </div>
+
           </section>
 
           <section className="grid cards5">
@@ -836,83 +603,48 @@ export default function HomePage() {
                   ScoreSaber 실제 PP 기준 Top 30 기록입니다.
                 </p>
               </div>
-              <button
-                type="button"
-                className="playlistButton"
-                onClick={handleExportTop30Image}
-                disabled={exporting}
-              >
-                {exporting ? "이미지 생성 중..." : "성과표 PNG 저장"}
-              </button>
             </div>
             <div className="topScoreGrid">
               {analysis.top30.map((s, idx) => (
-                <TopScoreCard s={s} idx={idx} key={`${s.song}-${s.difficulty}-${idx}`} />
+                <article
+                  className="mapCard topScoreCard recorded"
+                  key={`${s.song}-${s.difficulty}-${idx}`}
+                >
+                  <span className="rankBadge">#{idx + 1}</span>
+                  <div
+                    className={`accSlot ${s.accuracy >= 100 ? "perfectRecord" : s.fullCombo ? "fcRecord" : "normalRecord"}`}
+                  >
+                    {s.accuracy.toFixed(2)}
+                  </div>
+                  <div className="coverWrap">
+                    {s.coverImage ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={s.coverImage} alt="" />
+                    ) : (
+                      <div className="coverFallback">♪</div>
+                    )}
+                    <span
+                      className={`starBadge ${difficultyClass(s.difficulty)}`}
+                    >
+                      {s.stars.toFixed(2)}★
+                    </span>
+                  </div>
+                  <b>{s.song}</b>
+                  <small>
+                    <span
+                      className={`difficultyText ${difficultyClass(s.difficulty)}`}
+                    >
+                      {difficultyText(s.difficulty)}
+                    </span>{" "}
+                    · {s.mapper}
+                  </small>
+                  <small className="ppLine">
+                    {s.pp.toFixed(2)}pp · {dateText(s.timeSet)}
+                  </small>
+                </article>
               ))}
             </div>
           </section>
-
-          <div className="boardExportRoot" aria-hidden="true">
-            <div className="boardExportCanvas" ref={boardExportRef}>
-              <div className="boardExportIntro">
-                <div className="boardExportBrand">BS-Archive Top 30 Board</div>
-                <div className="boardExportDate">Generated {new Date().toLocaleDateString("ko-KR")}</div>
-              </div>
-              <div className="boardExportHeader">
-                <div className="boardExportIdentity">
-                  <div className="boardExportAvatar">
-                    {analysis.player.profilePicture ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={analysis.player.profilePicture} alt="" />
-                    ) : (
-                      <span>{analysis.player.name.slice(0, 1).toUpperCase()}</span>
-                    )}
-                  </div>
-                  <div>
-                    <div className="boardExportNameLine">
-                      <h2>{analysis.player.name}</h2>
-                      <span className={`tierBadge tier-${tier.group}`}>
-                        {tier.name}
-                      </span>
-                    </div>
-                    <p>
-                      {analysis.player.country ?? "-"} · ID {analysis.resolvedPlayerId ?? analysis.player.id ?? "-"}
-                    </p>
-                    <p>
-                      랭크맵 플레이 {analysis.player.rankedPlayCount.toLocaleString()}회 · Top 30 성과표
-                    </p>
-                  </div>
-                </div>
-                <div className="boardExportStats">
-                  <div>
-                    <span>총 PP</span>
-                    <strong>{analysis.player.pp.toLocaleString()}</strong>
-                  </div>
-                  <div>
-                    <span>글로벌</span>
-                    <strong>#{analysis.player.rank?.toLocaleString()}</strong>
-                  </div>
-                  <div>
-                    <span>국가</span>
-                    <strong>#{analysis.player.countryRank?.toLocaleString()}</strong>
-                  </div>
-                  <div>
-                    <span>평균 ACC</span>
-                    <strong>{analysis.summary.averageAccuracy}%</strong>
-                  </div>
-                  <div>
-                    <span>Top PP</span>
-                    <strong>{analysis.summary.bestPp.toFixed(2)}pp</strong>
-                  </div>
-                </div>
-              </div>
-              <div className="boardExportTopGrid">
-                {analysis.top30.map((s, idx) => (
-                  <TopScoreCard s={s} idx={idx} key={`export-${s.song}-${s.difficulty}-${idx}`} />
-                ))}
-              </div>
-            </div>
-          </div>
 
           <section className="grid twoCols">
             <div className="panel">

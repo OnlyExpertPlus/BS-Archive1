@@ -107,11 +107,13 @@ function weightedTotal(pps: number[]) {
 }
 
 function gainIfAdded(currentPps: number[], candidatePp: number) {
-  if (!candidatePp || candidatePp <= 0) return 0;
-  return round(
-    weightedTotal([...currentPps, candidatePp]) - weightedTotal(currentPps),
-    2,
-  );
+  if (!candidatePp || candidatePp <= 0 || !currentPps.length) return 0;
+  const base = currentPps
+    .filter((pp) => Number.isFinite(pp) && pp > 0)
+    .sort((a, b) => b - a);
+  const limit = base.length;
+  const next = [...base, candidatePp].sort((a, b) => b - a).slice(0, limit);
+  return round(weightedTotal(next) - weightedTotal(base), 2);
 }
 
 function gainIfReplaced(
@@ -382,48 +384,115 @@ function average(values: number[]) {
   return valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : 0;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function estimateAccSlopeByStar(bucketAvg: Map<number, number>) {
+  const buckets = [...bucketAvg.entries()].sort((a, b) => a[0] - b[0]);
+  const slopes: number[] = [];
+  for (let i = 0; i < buckets.length - 1; i += 1) {
+    const [starA, avgA] = buckets[i];
+    const [starB, avgB] = buckets[i + 1];
+    if (starB === starA) continue;
+    const dropPerStar = (avgA - avgB) / (starB - starA);
+    if (Number.isFinite(dropPerStar)) slopes.push(dropPerStar);
+  }
+  const positive = slopes.filter((v) => v > 0);
+  const value = positive.length ? average(positive) : 0.55;
+  return clamp(value, 0.28, 1.35);
+}
+
+function weightedNearbyAccuracy(
+  rankedScores: NormalizedScore[],
+  star: number,
+) {
+  const nearby = rankedScores
+    .filter((s) => Number.isFinite(s.stars) && Number.isFinite(s.accuracy))
+    .map((s) => {
+      const distance = Math.abs(s.stars - star);
+      return { score: s, distance };
+    })
+    .filter((item) => item.distance <= 1.35)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 18);
+
+  if (nearby.length < 4) return null;
+
+  const weighted = nearby.reduce(
+    (acc, item) => {
+      const weight = 1 / Math.pow(item.distance + 0.22, 2);
+      return {
+        total: acc.total + item.score.accuracy * weight,
+        weight: acc.weight + weight,
+      };
+    },
+    { total: 0, weight: 0 },
+  );
+
+  return weighted.weight ? weighted.total / weighted.weight : null;
+}
+
+function interpolateBucketAverage(
+  bucketAvg: Map<number, number>,
+  star: number,
+) {
+  const buckets = [...bucketAvg.entries()].sort((a, b) => a[0] - b[0]);
+  if (!buckets.length) return null;
+
+  const lower = [...buckets].reverse().find(([bucket]) => bucket <= star);
+  const upper = buckets.find(([bucket]) => bucket >= star);
+
+  if (lower && upper && lower[0] !== upper[0]) {
+    const t = (star - lower[0]) / (upper[0] - lower[0]);
+    return lower[1] + (upper[1] - lower[1]) * t;
+  }
+
+  const nearest = nearestBucketAverage(bucketAvg, Math.floor(star));
+  return nearest?.avg ?? null;
+}
+
 function estimateAccuracyForUnplayed(
   bucketAvg: Map<number, number>,
   rankedScores: NormalizedScore[],
   star: number,
   totalPp: number,
+  difficulty = "ExpertPlus",
 ) {
-  const bucket = Math.floor(star);
-  const exact = bucketAvg.get(bucket);
-  if (exact) return round(Math.min(98.7, Math.max(82, exact)), 2);
-
-  const nearest = nearestBucketAverage(bucketAvg, bucket);
-  if (nearest) {
-    // 가까운 별 구간 평균을 기준으로 별이 올라갈수록 조금 낮춰 잡습니다.
-    const directionPenalty =
-      nearest.distance *
-      (bucket >
-      [...bucketAvg.keys()].reduce(
-        (a, b) => (Math.abs(b - bucket) < Math.abs(a - bucket) ? b : a),
-        [...bucketAvg.keys()][0],
-      )
-        ? 0.62
-        : -0.22);
-    return round(
-      Math.min(98.7, Math.max(82, nearest.avg - directionPenalty)),
-      2,
-    );
-  }
-
-  // 데이터가 부족한 유저용 fallback. PP가 높을수록 9~12성 구간 예상 ACC를 높게 잡되, 너무 과장하지 않습니다.
-  const base =
-    totalPp >= 17000
-      ? 96.2
-      : totalPp >= 15000
-        ? 94.8
-        : totalPp >= 13000
-          ? 93.0
-          : totalPp >= 10000
-            ? 91.0
-            : 88.5;
   const minStar = minimumStarForPlayer(totalPp);
-  const starAdjustment = (star - minStar) * -0.55;
-  return round(Math.min(98.2, Math.max(82, base + starAdjustment)), 2);
+  const slope = estimateAccSlopeByStar(bucketAvg);
+  const nearby = weightedNearbyAccuracy(rankedScores, star);
+  const bucketEstimate = interpolateBucketAverage(bucketAvg, star);
+
+  const fallbackBase =
+    totalPp >= 17000
+      ? 96.4
+      : totalPp >= 15000
+        ? 95.1
+        : totalPp >= 13000
+          ? 93.3
+          : totalPp >= 10000
+            ? 91.2
+            : 88.8;
+
+  const base = nearby ?? bucketEstimate ?? fallbackBase;
+  const bucket = Math.floor(star);
+  const decimalPressure = (star - bucket) * slope;
+  const starBandPressure = Math.max(0, star - (minStar + 2.2)) * 0.18;
+  const diffBonus =
+    difficulty === "Easy"
+      ? 0.3
+      : difficulty === "Normal"
+        ? 0.22
+        : difficulty === "Hard"
+          ? 0.14
+          : difficulty === "Expert"
+            ? 0.05
+            : 0;
+
+  // 같은 9★대라도 9.02★와 9.98★를 똑같이 보지 않도록 별 소수점/주변 기록을 반영합니다.
+  const estimated = base - decimalPressure - starBandPressure + diffBonus;
+  return round(clamp(estimated, 82, 98.7), 2);
 }
 
 function makeTryCandidates(
@@ -469,6 +538,7 @@ function makeTryCandidates(
       rankedScores,
       m.stars,
       totalPp,
+      m.difficulty,
     );
     const expectedPp = expectedPpFromAccuracy(m.stars, expectedAccuracy);
     const ageDays = daysSince(
@@ -508,18 +578,26 @@ function makeTryCandidates(
       rankedScores.map((score) => score.pp),
       expectedPp,
     );
+
+    // 미기록 PP 효율곡은 실제 weighted 총 PP가 오를 가능성을 가장 우선합니다.
+    // 단순 raw PP가 높거나 최신곡이라는 이유만으로 추천 상단에 올라오지 않게 합니다.
+    if (!relaxed && estimatedGainPp < 1) return null;
+
+    const meaningfulGainBonus =
+      estimatedGainPp >= 1 ? estimatedGainPp * 95 : estimatedGainPp * 14;
     const priority =
-      expectedPp * 1.35 +
-      estimatedGainPp * 34 +
+      meaningfulGainBonus +
+      expectedPp * 0.55 +
       efficiencyBonus +
-      recentBonus +
-      reflectBonus +
-      starFitBonus -
+      recentBonus * 0.65 +
+      reflectBonus * 0.6 +
+      starFitBonus * 0.75 -
       tooLowStarPenalty -
       tooHighStarPenalty;
 
     const reasons: string[] = [];
-    if (expectedPp >= top50Floor) reasons.push("Top 기록 반영 가능성");
+    if (estimatedGainPp >= 1) reasons.push("실제 PP 증가 후보");
+    else if (expectedPp >= top50Floor) reasons.push("Top 기록 반영 가능성");
     else if (expectedPp >= top50Floor - 80) reasons.push("Top 기록 근처 후보");
     else reasons.push("실력대 기준 미기록 후보");
     if (efficiencyBonus >= 22) reasons.push("PP 효율 추정");
@@ -562,6 +640,7 @@ function makeTryCandidates(
           rankedScores,
           m.stars,
           totalPp,
+          m.difficulty,
         );
         const expectedPp = expectedPpFromAccuracy(m.stars, expectedAccuracy);
         return {
@@ -691,10 +770,11 @@ export function analyze(
       top,
       rankedLeaderboards,
       player.pp ?? 0,
-      10,
+      500,
     ),
     onePpCandidates: makeOnePpEfficiencyCandidates(top, 10),
     oldCandidates: makeOldCandidates(top, 10),
+    ppRecords: ranked.map((score) => score.pp).filter((pp) => pp > 0),
     ppNotice:
       "추천곡의 추정 PP와 예상 증가량은 ScoreSaber PP 커브 기반 계산값이며, 실제 ScoreSaber 반영 PP와 다를 수 있습니다.",
   };

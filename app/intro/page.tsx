@@ -1,5 +1,30 @@
 import Link from 'next/link';
 
+const tierRows = [
+  { name: 'IRON III', range: '0-1999', group: 'iron' },
+  { name: 'IRON II', range: '2000-2999', group: 'iron' },
+  { name: 'IRON I', range: '3000-3999', group: 'iron' },
+  { name: 'BRONZE III', range: '4000-4999', group: 'bronze' },
+  { name: 'BRONZE II', range: '5000-5999', group: 'bronze' },
+  { name: 'BRONZE I', range: '6000-6999', group: 'bronze' },
+  { name: 'SILVER III', range: '7000-7999', group: 'silver' },
+  { name: 'SILVER II', range: '8000-8999', group: 'silver' },
+  { name: 'SILVER I', range: '9000-9999', group: 'silver' },
+  { name: 'GOLD III', range: '10000-10599', group: 'gold' },
+  { name: 'GOLD II', range: '10600-11199', group: 'gold' },
+  { name: 'GOLD I', range: '11200-11799', group: 'gold' },
+  { name: 'PLATINUM III', range: '11800-12399', group: 'platinum' },
+  { name: 'PLATINUM II', range: '12400-12999', group: 'platinum' },
+  { name: 'PLATINUM I', range: '13000-13499', group: 'platinum' },
+  { name: 'DIAMOND III', range: '13500-13999', group: 'diamond' },
+  { name: 'DIAMOND II', range: '14000-14499', group: 'diamond' },
+  { name: 'DIAMOND I', range: '14500-14999', group: 'diamond' },
+  { name: 'MASTER', range: '15000-15999', group: 'master' },
+  { name: 'CHAMPION', range: '16000-16999', group: 'champion' },
+  { name: 'GRAND CHAMPION', range: '17000-17999', group: 'grandChampion' },
+  { name: 'LEGEND', range: '18000+', group: 'legend' },
+];
+
 export default function IntroPage() {
   return (
     <main className="page introPage">
@@ -35,12 +60,26 @@ export default function IntroPage() {
           <li>BS-Archive 전용 PP 티어와 Top 30 카드형 성과표 표시</li>
           <li>난이도 구간별 기록 통계와 최근 기록 확인</li>
           <li>기록 갱신 추천, 미기록 PP 효율곡, 오래된 기록 추천 제공</li>
+          <li>미기록 PP 효율곡 목표 증가량 슬라이더 필터 제공</li>
           <li>ScoreSaber PP 커브 기반 추정 PP와 예상 증가량 표시</li>
           <li>ScoreSaber 실제 랭크맵 기반 BS-Archive 기록장 제공</li>
           <li>유저별 기록 분리 저장, 수동 기록·메모·JSON 백업/복원 지원</li>
           <li>L/R 평균 컷 수동 입력 및 이전 기록 대비 증감량 표시</li>
-          <li>BeatSaver / ScoreSaber 바로가기 지원</li>
+          <li>BeatSaver / ScoreSaber 바로가기와 추천곡 .bplist 플레이리스트 저장 지원</li>
         </ul>
+      </section>
+
+      <section className="panel introPanel">
+        <h2>🏅 BS-Archive PP 티어</h2>
+        <p>티어는 ScoreSaber 총 PP를 기준으로 표시되는 BS-Archive 전용 랭크입니다.</p>
+        <div className="tierTable">
+          {tierRows.map((tier) => (
+            <div className="tierRow" key={tier.name}>
+              <span className={`tierBadge tier-${tier.group}`}>{tier.name}</span>
+              <span className="tierRange">{tier.range}pp</span>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section className="panel introPanel">
