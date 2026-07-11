@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getPlayer, getPlayerScoresPage, resolvePlayerId, scoreAccuracy } from '@/lib/scoresaber';
+import { getPlayer, getPlayerScoresPage, pureScoreValue, resolvePlayerId, scoreAccuracy } from '@/lib/scoresaber';
 
 export const runtime = 'nodejs';
 
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
           playerName: player.name,
           mapId: String(s.leaderboard.id),
           acc: round(scoreAccuracy(s)),
-          score: s.modifiedScore ?? s.baseScore ?? 0,
+          score: pureScoreValue(s),
           pp: round(s.pp ?? 0),
           rightHandAvg: undefined,
           leftHandAvg: undefined,

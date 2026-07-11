@@ -216,24 +216,89 @@ export async function getRankedLeaderboardsPage(
   return { leaderboards: data.leaderboards ?? [], metadata: data.metadata };
 }
 
-export function scoreAccuracy(score: ScoreSaberScore): number {
-  // modifier 보너스가 포함된 modifiedScore를 그대로 쓰면 FS/DA 등에서 ACC가 100%를 넘어갈 수 있습니다.
-  // baseScore가 정상 범위면 우선 사용하고, 없거나 maxScore를 넘으면 modifiedScore / multiplier로 순수 점수를 역산합니다.
-  const maxScore = score.leaderboard?.maxScore ?? 0;
-  if (!maxScore) return 0;
+const ACCURACY_STAR_PP = 42.1138;
+const ACCURACY_CURVE: Array<[number, number]> = [
+  [0, 0],
+  [0.6, 0.182232336674391],
+  [0.65, 0.586601001276758],
+  [0.7, 0.612556595911495],
+  [0.75, 0.645180821010144],
+  [0.8, 0.687226886295028],
+  [0.825, 0.715046566345427],
+  [0.85, 0.746229066414319],
+  [0.875, 0.781693456029605],
+  [0.9, 0.825756123560842],
+  [0.91, 0.848837598812447],
+  [0.92, 0.872871034144885],
+  [0.93, 0.903999407186574],
+  [0.94, 0.941736298058024],
+  [0.95, 1],
+  [0.955, 1.0388633331419],
+  [0.96, 1.08718835738505],
+  [0.965, 1.1552120359501],
+  [0.97, 1.24858077599573],
+  [0.9725, 1.30903330650576],
+  [0.975, 1.38071027431051],
+  [0.9775, 1.46647263992895],
+  [0.98, 1.57024100555322],
+  [0.9825, 1.69753624864754],
+  [0.985, 1.85638876936471],
+  [0.9875, 2.05894715905274],
+  [0.99, 2.32450628214992],
+  [0.99125, 2.49029057941069],
+  [0.9925, 2.68566785659272],
+  [0.99375, 2.9190155639255],
+  [0.995, 3.2022017597338],
+  [0.99625, 3.55261453375554],
+  [0.9975, 3.99679360676332],
+  [0.99825, 4.32502738358955],
+  [0.999, 4.7154706464162],
+  [0.9995, 5.01954359587479],
+  [1, 5.36739428289063],
+];
 
+function accuracyFromPp(stars?: number, pp?: number): number | null {
+  if (!stars || stars <= 0 || !pp || pp <= 0) return null;
+  const targetMultiplier = pp / (stars * ACCURACY_STAR_PP);
+
+  for (let i = 0; i < ACCURACY_CURVE.length - 1; i += 1) {
+    const [x1, y1] = ACCURACY_CURVE[i];
+    const [x2, y2] = ACCURACY_CURVE[i + 1];
+    if (targetMultiplier >= y1 && targetMultiplier <= y2) {
+      if (y1 === y2) return x1 * 100;
+      const t = (targetMultiplier - y1) / (y2 - y1);
+      return (x1 + (x2 - x1) * t) * 100;
+    }
+  }
+
+  return null;
+}
+
+export function pureScoreValue(score: ScoreSaberScore): number {
+  const maxScore = score.leaderboard?.maxScore ?? 0;
   const baseScore = score.baseScore ?? 0;
   const modifiedScore = score.modifiedScore ?? 0;
   const multiplier = score.multiplier ?? 1;
 
-  let rawScore = baseScore;
-  if (!rawScore || rawScore > maxScore) {
-    rawScore =
-      modifiedScore && multiplier && multiplier !== 1
-        ? modifiedScore / multiplier
-        : modifiedScore;
+  if (baseScore > 0 && (!maxScore || baseScore <= maxScore)) return Math.round(baseScore);
+  if (modifiedScore > 0 && multiplier > 0 && multiplier !== 1) {
+    return Math.round(modifiedScore / multiplier);
+  }
+  return Math.round(modifiedScore || baseScore || 0);
+}
+
+export function scoreAccuracy(score: ScoreSaberScore): number {
+  // 랭크 기록은 PP와 현재 별 값을 역산한 ACC를 우선 사용합니다.
+  // 이렇게 하면 FS 등 modifier가 modifiedScore에 섞여 있어도 순수 ACC를 복원할 수 있습니다.
+  const ppAccuracy = accuracyFromPp(score.leaderboard?.stars, score.pp);
+  if (ppAccuracy !== null && Number.isFinite(ppAccuracy)) {
+    return Math.min(100, Math.max(0, ppAccuracy));
   }
 
+  const maxScore = score.leaderboard?.maxScore ?? 0;
+  if (!maxScore) return 0;
+
+  const rawScore = pureScoreValue(score);
   if (!rawScore) return 0;
   return Math.min(100, Math.max(0, (rawScore / maxScore) * 100));
 }

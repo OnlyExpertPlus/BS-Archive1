@@ -212,6 +212,18 @@ function historySnapshotId(record: ManualRecord) {
   return `${record.id}-history-${record.createdAt}-${record.score}-${record.acc}`.replace(/[^a-zA-Z0-9_.:-]/g, '-');
 }
 
+function isModifierAccuracyCorrection(oldRecord: ManualRecord, nextRecord: ManualRecord) {
+  return (
+    oldRecord.source === 'scoresaber' &&
+    nextRecord.source === 'scoresaber' &&
+    oldRecord.mapId === nextRecord.mapId &&
+    oldRecord.scoreId !== undefined &&
+    oldRecord.scoreId === nextRecord.scoreId &&
+    pureAcc(oldRecord.acc) >= 99.999 &&
+    pureAcc(nextRecord.acc) < 99.99
+  );
+}
+
 export default function LogbookPage() {
   const [activeStar, setActiveStar] = useState(14);
   const [records, setRecords] = useState<ManualRecord[]>([]);
@@ -298,13 +310,28 @@ export default function LogbookPage() {
       const byId = new Map(previous.map((r) => [r.id, r]));
 
       incoming.forEach((next) => {
+        // 이전 버전에서 FS 등 modifier 기록이 100%로 잘못 저장된 히스토리도 함께 제거합니다.
+        if (next.scoreId && pureAcc(next.acc) < 99.99) {
+          [...byId.entries()].forEach(([recordId, record]) => {
+            const sameImportedScore =
+              record.source === 'scoresaber' &&
+              record.mapId === next.mapId &&
+              record.scoreId === next.scoreId;
+            if (sameImportedScore && pureAcc(record.acc) >= 99.999 && recordId !== next.id) {
+              byId.delete(recordId);
+            }
+          });
+        }
+
         const old = byId.get(next.id);
         if (!old) {
           byId.set(next.id, next);
           return;
         }
 
-        if (!samePerformanceRecord(old, next)) {
+        const modifierCorrection = isModifierAccuracyCorrection(old, next);
+
+        if (!modifierCorrection && !samePerformanceRecord(old, next)) {
           const snapshotId = historySnapshotId(old);
           const alreadySaved = [...byId.values()].some(
             (record) =>
