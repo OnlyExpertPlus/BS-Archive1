@@ -11,11 +11,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'ScoreSaber ID, 커스텀 ID 또는 프로필 URL을 입력해 주세요.' }, { status: 400 });
     }
 
-    const [player, topScores, recentScores] = await Promise.all([
+    const [player, topScorePages, recentScores] = await Promise.all([
       getPlayer(playerId),
-      getPlayerScores(playerId, 'top', 100, 1),
-      getPlayerScores(playerId, 'recent', 50, 1)
+      Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          getPlayerScores(playerId, 'top', 100, index + 1).catch(() => []),
+        ),
+      ),
+      getPlayerScores(playerId, 'recent', 100, 1)
     ]);
+
+    const topScores = topScorePages.flat();
 
     const rankedPages = await Promise.all(
       Array.from({ length: 35 }, (_, index) => getRankedLeaderboardsPage(index + 1, 100).catch(() => ({ leaderboards: [] })))

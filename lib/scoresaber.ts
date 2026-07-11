@@ -217,10 +217,25 @@ export async function getRankedLeaderboardsPage(
 }
 
 export function scoreAccuracy(score: ScoreSaberScore): number {
-  const rawScore = score.modifiedScore ?? score.baseScore ?? 0;
+  // modifier 보너스가 포함된 modifiedScore를 그대로 쓰면 FS/DA 등에서 ACC가 100%를 넘어갈 수 있습니다.
+  // baseScore가 정상 범위면 우선 사용하고, 없거나 maxScore를 넘으면 modifiedScore / multiplier로 순수 점수를 역산합니다.
   const maxScore = score.leaderboard?.maxScore ?? 0;
-  if (!rawScore || !maxScore) return 0;
-  return (rawScore / maxScore) * 100;
+  if (!maxScore) return 0;
+
+  const baseScore = score.baseScore ?? 0;
+  const modifiedScore = score.modifiedScore ?? 0;
+  const multiplier = score.multiplier ?? 1;
+
+  let rawScore = baseScore;
+  if (!rawScore || rawScore > maxScore) {
+    rawScore =
+      modifiedScore && multiplier && multiplier !== 1
+        ? modifiedScore / multiplier
+        : modifiedScore;
+  }
+
+  if (!rawScore) return 0;
+  return Math.min(100, Math.max(0, (rawScore / maxScore) * 100));
 }
 
 export function difficultyLabel(raw?: string): string {

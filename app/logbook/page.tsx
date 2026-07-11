@@ -77,6 +77,11 @@ function todayText(value: string) {
   return new Date(value).toLocaleDateString('ko-KR');
 }
 
+function pureAcc(value?: number) {
+  if (value === undefined || Number.isNaN(value)) return 0;
+  return Math.min(100, Math.max(0, value));
+}
+
 function getBucket(stars: number) {
   return Math.max(1, Math.min(15, Math.floor(stars)));
 }
@@ -96,7 +101,7 @@ function difficultyText(difficulty: string) {
 
 function recordTone(record?: ManualRecord, hasFc = false) {
   if (!record) return '';
-  if (record.acc >= 100) return 'perfectRecord';
+  if (pureAcc(record.acc) >= 100) return 'perfectRecord';
   if (hasFc || record.fullCombo) return 'fcRecord';
   return 'normalRecord';
 }
@@ -112,12 +117,99 @@ function signed(value?: number, digits = 2) {
   return { text: `${value > 0 ? '+' : ''}${value.toFixed(digits)}`, className: value > 0 ? 'deltaUp' : 'deltaDown' };
 }
 
+
+
+function canonicalMapKey(map: RankedMap) {
+  return String(map.leaderboardId || map.id);
+}
+
+function recordsForMap(
+  map: RankedMap,
+  recordsByMap: Map<string, ManualRecord[]>,
+) {
+  const direct = recordsByMap.get(map.id) ?? [];
+  const byLeaderboard = recordsByMap.get(String(map.leaderboardId)) ?? [];
+  const merged = [...direct, ...byLeaderboard];
+  const seen = new Set<string>();
+  return merged.filter((record) => {
+    const key = record.id || `${record.mapId}-${record.createdAt}-${record.acc}-${record.score}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function bestRecordForMap(
+  map: RankedMap,
+  recordsByMap: Map<string, ManualRecord[]>,
+) {
+  return recordsForMap(map, recordsByMap).sort(
+    (a, b) => pureAcc(b.acc) - pureAcc(a.acc) || (b.pp ?? 0) - (a.pp ?? 0),
+  )[0];
+}
+
+function gradeSummaryForStar(
+  maps: RankedMap[],
+  recordsByMap: Map<string, ManualRecord[]>,
+  activeStar: number,
+) {
+  const uniqueMaps = [...new Map(
+    maps
+      .filter((m) => getBucket(m.stars) === activeStar)
+      .map((map) => [canonicalMapKey(map), map]),
+  ).values()];
+
+  const bestRecords = uniqueMaps
+    .map((map) => bestRecordForMap(map, recordsByMap))
+    .filter((record): record is ManualRecord => Boolean(record));
+
+  const total = uniqueMaps.length;
+  const avgAcc = bestRecords.length
+    ? bestRecords.reduce((sum, record) => sum + pureAcc(record.acc), 0) / bestRecords.length
+    : 0;
+  const ppRecords = bestRecords.filter((record) => record.pp !== undefined && Number.isFinite(record.pp));
+  const avgPp = ppRecords.length
+    ? ppRecords.reduce((sum, record) => sum + (record.pp ?? 0), 0) / ppRecords.length
+    : 0;
+
+  const count = (predicate: (record: ManualRecord) => boolean) =>
+    bestRecords.filter(predicate).length;
+
+  return {
+    total,
+    recorded: bestRecords.length,
+    avgAcc,
+    avgPp,
+    rows: [
+      { label: 'Full Combo', value: count((record) => record.fullCombo), className: 'summaryFc' },
+      { label: 'Over 98%', value: count((record) => pureAcc(record.acc) >= 98), className: 'summary98' },
+      { label: 'Over 95%', value: count((record) => pureAcc(record.acc) >= 95), className: 'summary95' },
+      { label: 'Over SS', value: count((record) => pureAcc(record.acc) >= 90), className: 'summarySs' },
+      { label: 'Over S', value: count((record) => pureAcc(record.acc) >= 80), className: 'summaryS' },
+      { label: 'Clear', value: bestRecords.length, className: 'summaryClear' },
+    ],
+  };
+}
+
 function recordStorageKey(playerId: string) {
   return `${RECORDS_KEY_PREFIX}:${playerId || 'local'}`;
 }
 
 function keepSupplementedValue<T>(oldValue: T | undefined, newValue: T | undefined) {
   return oldValue !== undefined && oldValue !== null ? oldValue : newValue;
+}
+
+function samePerformanceRecord(a: ManualRecord, b: ManualRecord) {
+  return (
+    Math.abs(pureAcc(a.acc) - pureAcc(b.acc)) < 0.005 &&
+    (a.score ?? 0) === (b.score ?? 0) &&
+    Math.abs((a.pp ?? 0) - (b.pp ?? 0)) < 0.005 &&
+    Boolean(a.fullCombo) === Boolean(b.fullCombo)
+  );
+}
+
+function historySnapshotId(record: ManualRecord) {
+  return `${record.id}-history-${record.createdAt}-${record.score}-${record.acc}`.replace(/[^a-zA-Z0-9_.:-]/g, '-');
 }
 
 export default function LogbookPage() {
@@ -212,6 +304,25 @@ export default function LogbookPage() {
           return;
         }
 
+        if (!samePerformanceRecord(old, next)) {
+          const snapshotId = historySnapshotId(old);
+          const alreadySaved = [...byId.values()].some(
+            (record) =>
+              record.id === snapshotId ||
+              (record.mapId === old.mapId && samePerformanceRecord(record, old)),
+          );
+          if (!alreadySaved) {
+            byId.set(snapshotId, {
+              ...old,
+              id: snapshotId,
+              memo:
+                old.memo && old.memo !== 'ScoreSaber에서 가져온 기록'
+                  ? old.memo
+                  : '이전 ScoreSaber 기록',
+            });
+          }
+        }
+
         byId.set(next.id, {
           ...old,
           acc: next.acc,
@@ -224,7 +335,7 @@ export default function LogbookPage() {
           rightHandAvg: keepSupplementedValue(old.rightHandAvg, next.rightHandAvg),
           leftHandAvg: keepSupplementedValue(old.leftHandAvg, next.leftHandAvg),
           handAvgSource: keepSupplementedValue(old.handAvgSource, next.handAvgSource),
-          memo: old.memo && old.memo !== 'ScoreSaber에서 가져온 기록' ? old.memo : next.memo,
+          memo: old.memo && old.memo !== 'ScoreSaber에서 가져온 기록' && old.memo !== '이전 ScoreSaber 기록' ? old.memo : next.memo,
           fullCombo: old.fullCombo || next.fullCombo
         });
       });
@@ -279,14 +390,22 @@ export default function LogbookPage() {
         return [m.title, m.artist, m.mapper, m.songHash, String(m.leaderboardId)].some((text) => text?.toLowerCase().includes(q));
       })
       .filter((m) => {
-        const list = recordsByMap.get(m.id) ?? [];
+        const list = recordsForMap(m, recordsByMap);
         if (filter === 'recorded') return list.length > 0;
         if (filter === 'unrecorded') return list.length === 0;
         if (filter === 'fc') return list.some((r) => r.fullCombo);
         return true;
       })
+      .filter((map, index, list) =>
+        list.findIndex((item) => canonicalMapKey(item) === canonicalMapKey(map)) === index,
+      )
       .sort((a, b) => b.stars - a.stars || a.title.localeCompare(b.title));
   }, [activeStar, query, filter, recordsByMap, maps]);
+
+  const starSummary = useMemo(
+    () => gradeSummaryForStar(maps, recordsByMap, activeStar),
+    [maps, recordsByMap, activeStar],
+  );
 
   function bestRecord(mapId: string) {
     const list = recordsByMap.get(mapId) ?? [];
@@ -440,14 +559,40 @@ export default function LogbookPage() {
         ))}
       </section>
 
+      <section className="panel starSummaryPanel">
+        <div className="starSummaryHeader">
+          <div>
+            <p className="eyebrow">{activeStar}★ Records</p>
+            <h2>{activePlayer.name ?? activePlayer.id}</h2>
+            <p className="muted">
+              평균 ACC {starSummary.avgAcc ? starSummary.avgAcc.toFixed(2) : '-'}% · 평균 PP {starSummary.avgPp ? starSummary.avgPp.toFixed(2) : '-'}pp · 기록 {starSummary.recorded} / {starSummary.total}
+            </p>
+          </div>
+        </div>
+        <div className="summaryBars">
+          {starSummary.rows.map((row) => {
+            const percent = starSummary.total ? Math.min(100, (row.value / starSummary.total) * 100) : 0;
+            return (
+              <div className="summaryBarRow" key={row.label}>
+                <span>{row.label}</span>
+                <div className="summaryTrack">
+                  <div className={`summaryFill ${row.className}`} style={{ width: `${percent}%` }} />
+                  <b>{row.value} / {starSummary.total}</b>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
       <section className="mapGrid">
         {visibleMaps.map((map) => {
-          const best = bestRecord(map.id);
-          const history = recordsByMap.get(map.id) ?? [];
+          const best = bestRecordForMap(map, recordsByMap);
+          const history = recordsForMap(map, recordsByMap);
           const hasFc = history.some((r) => r.fullCombo);
           return (
-            <button key={map.id} className={`mapCard ${best ? 'recorded' : ''} ${hasFc ? 'fullCombo' : ''} ${best?.acc && best.acc >= 100 ? 'perfectCombo' : ''}`} onClick={() => setSelected(map)}>
-              <div className={`accSlot ${best ? recordTone(best, hasFc) : 'emptyRecord'}`}>{best ? best.acc.toFixed(2) : '-'}</div>
+            <button key={map.id} className={`mapCard ${best ? 'recorded' : ''} ${hasFc ? 'fullCombo' : ''} ${best?.acc && pureAcc(best.acc) >= 100 ? 'perfectCombo' : ''}`} onClick={() => setSelected(map)}>
+              <div className={`accSlot ${best ? recordTone(best, hasFc) : 'emptyRecord'}`}>{best ? pureAcc(best.acc).toFixed(2) : '-'}</div>
               <div className="coverWrap">
                 {map.coverUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -492,15 +637,15 @@ export default function LogbookPage() {
 
             <h3>기록 히스토리</h3>
             <div className="historyList">
-              {(recordsByMap.get(selected.id) ?? []).map((r) => (
-                <article key={r.id} className={`historyItem ${r.fullCombo ? 'fullCombo' : ''} ${r.acc >= 100 ? 'perfectRecord' : ''} ${editingRecord?.id === r.id ? 'editing' : ''}`}>
+              {recordsForMap(selected, recordsByMap).map((r) => (
+                <article key={r.id} className={`historyItem ${r.fullCombo ? 'fullCombo' : ''} ${pureAcc(r.acc) >= 100 ? 'perfectRecord' : ''} ${editingRecord?.id === r.id ? 'editing' : ''}`}>
                   <div>
-                    <b>{r.acc.toFixed(2)}%</b>
+                    <b>{pureAcc(r.acc).toFixed(2)}%</b>
                     {(() => {
-                      const list = recordsByMap.get(selected.id) ?? [];
+                      const list = recordsForMap(selected, recordsByMap);
                       const currentIndex = list.findIndex((item) => item.id === r.id);
                       const prev = currentIndex >= 0 ? list[currentIndex + 1] : undefined;
-                      const accDelta = prev ? signed(r.acc - prev.acc) : null;
+                      const accDelta = prev ? signed(pureAcc(r.acc) - pureAcc(prev.acc)) : null;
                       const scoreDelta = prev ? signed(r.score - prev.score, 0) : null;
                       const ppDelta = prev && r.pp !== undefined && prev.pp !== undefined ? signed(r.pp - prev.pp) : null;
                       const rDelta = prev && r.rightHandAvg !== undefined && prev.rightHandAvg !== undefined ? signed(r.rightHandAvg - prev.rightHandAvg, 1) : null;
@@ -521,7 +666,7 @@ export default function LogbookPage() {
                   </div>
                 </article>
               ))}
-              {!(recordsByMap.get(selected.id) ?? []).length && <p className="muted">아직 저장된 기록이 없습니다.</p>}
+              {!recordsForMap(selected, recordsByMap).length && <p className="muted">아직 저장된 기록이 없습니다.</p>}
             </div>
           </div>
         </div>

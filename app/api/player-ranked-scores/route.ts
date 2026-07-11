@@ -8,6 +8,7 @@ function round(value: number, digits = 2) {
   return Math.round(value * factor) / factor;
 }
 
+
 export async function GET(request: NextRequest) {
   try {
     const input = request.nextUrl.searchParams.get('player') ?? '';

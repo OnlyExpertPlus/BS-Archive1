@@ -129,6 +129,29 @@ function dateText(value: string) {
   return new Date(value).toLocaleDateString("ko-KR");
 }
 
+function clientDaysSince(value?: string | null) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - time) / 86400000);
+}
+
+
+function oldAgeLabel(minDays: number, maxDays: number | null) {
+  if (minDays === 7 && maxDays === 30) return "1주~1달";
+  if (minDays === 30 && maxDays === 90) return "1달~3달";
+  if (minDays === 90 && maxDays === 180) return "3달~6달";
+  if (minDays === 180 && maxDays === 365) return "6달~1년";
+  return "1년 이상";
+}
+
+function isInOldAgeRange(value: string | undefined, minDays: number, maxDays: number | null) {
+  const days = clientDaysSince(value);
+  if (!Number.isFinite(days)) return false;
+  if (maxDays === null) return days >= minDays;
+  return days >= minDays && days < maxDays;
+}
+
 function difficultyClass(difficulty: string) {
   const key = difficulty.toLowerCase().replace(/\s|\+/g, "");
   if (key === "easy") return "diffEasy";
@@ -173,7 +196,7 @@ function downloadPlaylist(title: string, scores: AnalyzedScore[]) {
     playlistTitle: `BS-Archive - ${title}`,
     playlistAuthor: "BS-Archive",
     playlistDescription:
-      "BS-Archive 추천곡 TOP 10으로 만든 Beat Saber 플레이리스트입니다. 추천 PP와 증가량은 추정값일 수 있습니다.",
+      "BS-Archive 추천곡으로 만든 Beat Saber 플레이리스트입니다. 추천 PP와 증가량은 추정값일 수 있습니다.",
     songs,
   };
 
@@ -455,6 +478,32 @@ function getDefaultTargetGain(totalPp: number) {
   return 15;
 }
 
+
+function getWarmupStarRange(totalPp: number) {
+  if (totalPp >= 17000) return { min: 10, max: 11 };
+  if (totalPp >= 15000) return { min: 9, max: 11 };
+  if (totalPp >= 14000) return { min: 9, max: 10.5 };
+  if (totalPp >= 13000) return { min: 8, max: 9.5 };
+  if (totalPp >= 11500) return { min: 7, max: 9 };
+  if (totalPp >= 9000) return { min: 6, max: 8 };
+  return { min: 4, max: 7 };
+}
+
+function getChallengeStarRange(totalPp: number) {
+  if (totalPp >= 18000) return { min: 12, max: 15 };
+  if (totalPp >= 16500) return { min: 11, max: 14.5 };
+  if (totalPp >= 15000) return { min: 10.5, max: 13.8 };
+  if (totalPp >= 14000) return { min: 10.2, max: 13 };
+  if (totalPp >= 13000) return { min: 10.2, max: 12.5 };
+  if (totalPp >= 11500) return { min: 8.8, max: 11.5 };
+  if (totalPp >= 9000) return { min: 7.5, max: 10.5 };
+  return { min: 5, max: 9 };
+}
+
+function inStarRange(score: AnalyzedScore, range: { min: number; max: number }) {
+  return score.stars >= range.min && score.stars <= range.max;
+}
+
 type RecommendationTabKey = "refresh" | "try" | "old";
 
 function RecommendationTabs({ analysis }: { analysis: Analysis }) {
@@ -463,18 +512,23 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
   const [targetGainDraft, setTargetGainDraft] = useState(defaultTargetGain);
   const [targetGain, setTargetGain] = useState<number | null>(defaultTargetGain);
   const [tryPage, setTryPage] = useState(0);
+  const [refreshPage, setRefreshPage] = useState(0);
+  const [oldPage, setOldPage] = useState(0);
+  const [oldAgeRange, setOldAgeRange] = useState<{ min: number; max: number | null }>({ min: 90, max: 180 });
 
   useEffect(() => {
     const nextDefault = getDefaultTargetGain(analysis.player.pp);
     setTargetGain(nextDefault);
     setTargetGainDraft(nextDefault);
     setTryPage(0);
+    setRefreshPage(0);
+    setOldPage(0);
   }, [analysis.resolvedPlayerId, analysis.player.pp]);
   const tabs = useMemo(
     () => [
       {
         key: "refresh" as const,
-        title: "기록 갱신 추천 TOP 10",
+        title: "기록 갱신 추천",
         short: "기록 갱신",
         description:
           "이미 친 곡 중에서 현재 기록 대비 갱신 여지가 커 보이는 곡입니다.",
@@ -483,7 +537,7 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
       },
       {
         key: "try" as const,
-        title: "미기록 추천곡 TOP 10",
+        title: "미기록 추천곡",
         short: "미기록 추천",
         description:
           "아직 기록이 없는 ScoreSaber 랭크맵 중에서 현재 기록 수준 기준으로 PP 반영 가능성이 높은 곡입니다.",
@@ -492,7 +546,7 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
       },
       {
         key: "old" as const,
-        title: "오래된 기록 갱신 후보 TOP 10",
+        title: "오래된 기록 갱신 후보",
         short: "오래된 기록",
         description:
           "90일 이상 지난 기록 중 지금 다시 치면 갱신 가능성이 있어 보이는 곡입니다.",
@@ -511,16 +565,30 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
     active === "try" && targetGain !== null
       ? targetFilteredScores(selected.scores, targetGain, ppRecords)
       : selected.scores;
+  const filteredOldScores =
+    active === "old"
+      ? selected.scores.filter((score) => isInOldAgeRange(score.timeSet, oldAgeRange.min, oldAgeRange.max))
+      : selected.scores;
+  const refreshPageCount = Math.max(1, Math.ceil(analysis.refreshCandidates.length / 10));
+  const oldPageCount = Math.max(1, Math.ceil(filteredOldScores.length / 10));
   const tryPageCount = Math.max(1, Math.ceil(filteredTryScores.length / 10));
   const safeTryPage = Math.min(tryPage, tryPageCount - 1);
+  const safeRefreshPage = Math.min(refreshPage, refreshPageCount - 1);
+  const safeOldPage = Math.min(oldPage, oldPageCount - 1);
   const visibleScores =
     active === "try" && targetGain !== null
       ? filteredTryScores.slice(safeTryPage * 10, safeTryPage * 10 + 10)
-      : selected.scores.slice(0, 10);
+      : active === "refresh"
+        ? analysis.refreshCandidates.slice(safeRefreshPage * 10, safeRefreshPage * 10 + 10)
+        : active === "old"
+          ? filteredOldScores.slice(safeOldPage * 10, safeOldPage * 10 + 10)
+          : selected.scores.slice(0, 10);
   const visibleDescription =
     active === "try" && targetGain !== null
       ? `${selected.description} 현재 목표 +${targetGain}pp를 달성하기 위한 예상 ACC를 다시 계산해 추천합니다.`
-      : selected.description;
+      : active === "old"
+        ? `${selected.description} 현재 기준은 ${oldAgeLabel(oldAgeRange.min, oldAgeRange.max)} 구간 기록입니다.`
+        : selected.description;
 
   return (
     <section className="panel recommendationPanel recommendationTabsPanel">
@@ -529,7 +597,7 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
           <p className="eyebrow">Recommendation</p>
           <h2>추천곡</h2>
           <p className="muted">
-            원하는 추천 기준을 선택해서 TOP 10만 따로 확인할 수 있습니다.
+            원하는 추천 기준을 선택해서 추천 후보를 따로 확인할 수 있습니다.
           </p>
           {analysis.ppNotice && <p className="ppNotice">{analysis.ppNotice}</p>}
         </div>
@@ -544,7 +612,7 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
             key={tab.key}
             type="button"
             className={active === tab.key ? "active" : ""}
-            onClick={() => { setActive(tab.key); setTryPage(0); }}
+            onClick={() => { setActive(tab.key); setTryPage(0); setRefreshPage(0); setOldPage(0); }}
           >
             <span>{tab.short}</span>
           </button>
@@ -584,6 +652,32 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
           </div>
         </div>
       )}
+      {active === "old" && (
+        <div className="oldAgeControl">
+          <b>오래된 기록 기준</b>
+          <div>
+            {[
+              { label: "1주~1달", min: 7, max: 30 },
+              { label: "1달~3달", min: 30, max: 90 },
+              { label: "3달~6달", min: 90, max: 180 },
+              { label: "6달~1년", min: 180, max: 365 },
+              { label: "1년 이상", min: 365, max: null },
+            ].map((item) => (
+              <button
+                key={`${item.min}-${item.max ?? "up"}`}
+                type="button"
+                className={oldAgeRange.min === item.min && oldAgeRange.max === item.max ? "active" : ""}
+                onClick={() => {
+                  setOldAgeRange({ min: item.min, max: item.max });
+                  setOldPage(0);
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <RecommendationSection
         title={selected.title}
         description={visibleDescription}
@@ -598,6 +692,32 @@ function RecommendationTabs({ analysis }: { analysis: Analysis }) {
           <button
             type="button"
             onClick={() => setTryPage((prev) => (prev + 1) % tryPageCount)}
+          >
+            다른 후보 보기
+          </button>
+        </div>
+      )}
+      {active === "refresh" && analysis.refreshCandidates.length > 10 && (
+        <div className="candidatePager">
+          <span>
+            {safeRefreshPage + 1} / {refreshPageCount} 페이지
+          </span>
+          <button
+            type="button"
+            onClick={() => setRefreshPage((prev) => (prev + 1) % refreshPageCount)}
+          >
+            다른 후보 보기
+          </button>
+        </div>
+      )}
+      {active === "old" && filteredOldScores.length > 10 && (
+        <div className="candidatePager">
+          <span>
+            {safeOldPage + 1} / {oldPageCount} 페이지
+          </span>
+          <button
+            type="button"
+            onClick={() => setOldPage((prev) => (prev + 1) % oldPageCount)}
           >
             다른 후보 보기
           </button>
@@ -649,6 +769,166 @@ function TopScoreCard({
     </article>
   );
 }
+
+
+function DailyPickCard({
+  label,
+  score,
+  note,
+}: {
+  label: string;
+  score?: AnalyzedScore;
+  note: string;
+}) {
+  if (!score) {
+    return (
+      <article className="dailyPickCard">
+        <span>{label}</span>
+        <b>추천 후보 없음</b>
+        <p>{note}</p>
+      </article>
+    );
+  }
+
+  return (
+    <article className="dailyPickCard">
+      <span>{label}</span>
+      <div className="dailyPickMain">
+        <div className="dailyPickCover">
+          {score.coverImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={score.coverImage} alt="" />
+          ) : (
+            <div className="coverFallback">♪</div>
+          )}
+        </div>
+        <div>
+          <b>{score.song}</b>
+          <p>
+            <span className={`difficultyText ${difficultyClass(score.difficulty)}`}>
+              {difficultyText(score.difficulty)}
+            </span>{" "}
+            · {score.mapper || "-"}
+          </p>
+          <p className="muted">{note}</p>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function DailyPicks({ analysis }: { analysis: Analysis }) {
+  const [rollSeed, setRollSeed] = useState(0);
+  const [rolling, setRolling] = useState(false);
+
+  const warmupRange = getWarmupStarRange(analysis.player.pp);
+  const challengeRange = getChallengeStarRange(analysis.player.pp);
+
+  const warmupPool = useMemo(() => {
+    const midpoint = (warmupRange.min + warmupRange.max) / 2;
+    return [...analysis.top50]
+      .filter((score) => score.accuracy >= 88 && inStarRange(score, warmupRange))
+      .sort(
+        (a, b) =>
+          Math.abs(a.stars - midpoint) - Math.abs(b.stars - midpoint) ||
+          Math.abs(a.accuracy - 94.5) - Math.abs(b.accuracy - 94.5) ||
+          b.pp - a.pp,
+      );
+  }, [analysis.top50, warmupRange.min, warmupRange.max]);
+
+  const refreshPool = analysis.refreshCandidates;
+  const challengePool = useMemo(() => {
+    const target = Math.max(getDefaultTargetGain(analysis.player.pp), analysis.player.pp >= 15000 ? 10 : 6);
+    const currentPps = analysis.ppRecords?.length
+      ? analysis.ppRecords
+      : analysis.top50.map((score) => score.pp).filter(Boolean);
+
+    const targetBased = targetFilteredScores(analysis.tryCandidates, target, currentPps);
+    const source = targetBased.length ? targetBased : analysis.tryCandidates;
+    const preferredAccLimit = analysis.player.pp >= 13000 ? 96.4 : 97;
+
+    const candidates = source
+      .filter((score) => inStarRange(score, challengeRange))
+      .map((score) => {
+        const expectedAcc = score.targetAccuracy ?? score.accuracy;
+        const highStarBonus = Math.max(0, score.stars - challengeRange.min) * 2.2;
+        const accComfortBonus = Math.max(0, preferredAccLimit - expectedAcc) * 1.6;
+        const ppGainBonus = (score.estimatedGainPp ?? 0) * 2.8;
+        const ppValueBonus = score.pp / 140;
+        const tooEasyPenalty =
+          expectedAcc > preferredAccLimit && score.stars < challengeRange.min + 0.9
+            ? (expectedAcc - preferredAccLimit) * 5
+            : 0;
+        return {
+          ...score,
+          challengePriority:
+            ppGainBonus + ppValueBonus + highStarBonus + accComfortBonus - tooEasyPenalty,
+        };
+      })
+      .filter((score) => {
+        const expectedAcc = score.targetAccuracy ?? score.accuracy;
+        return expectedAcc <= preferredAccLimit || score.stars >= challengeRange.min + 0.9;
+      })
+      .sort(
+        (a, b) =>
+          b.challengePriority - a.challengePriority ||
+          (b.estimatedGainPp ?? 0) - (a.estimatedGainPp ?? 0) ||
+          b.stars - a.stars,
+      );
+
+    return candidates.length ? candidates : source.filter((score) => inStarRange(score, challengeRange));
+  }, [analysis, challengeRange.min, challengeRange.max]);
+
+  function pick<T>(items: T[], offset: number) {
+    if (!items.length) return undefined;
+    return items[(rollSeed + offset) % items.length];
+  }
+
+  const warmup = pick(warmupPool, 0);
+  const refresh = pick(refreshPool, 1);
+  const challenge = pick(challengePool, 2);
+
+  function reroll() {
+    setRolling(true);
+    window.setTimeout(() => {
+      setRollSeed((prev) => prev + 1 + Math.floor(Math.random() * 7));
+      setRolling(false);
+    }, 650);
+  }
+
+  return (
+    <section className={`panel dailyPicksPanel ${rolling ? "rolling" : ""}`}>
+      <div className="sectionHeader">
+        <div>
+          <p className="eyebrow">Today</p>
+          <h2>오늘의 추천 3곡</h2>
+          <p className="muted">워밍업, 기록 갱신, PP 도전용으로 한 곡씩 골라봤습니다.</p>
+        </div>
+        <button type="button" className="playlistButton rerollButton" onClick={reroll} disabled={rolling}>
+          {rolling ? "뽑는 중..." : "다시 뽑기"}
+        </button>
+      </div>
+      <div className="dailyPickGrid">
+        <DailyPickCard
+          label="워밍업"
+          score={warmup}
+          note={warmup ? `${warmup.stars.toFixed(2)}★ · ${warmupRange.min}~${warmupRange.max}★ 워밍업 구간` : `${warmupRange.min}~${warmupRange.max}★ 기록을 더 불러오면 추천이 표시됩니다.`}
+        />
+        <DailyPickCard
+          label="기록 갱신"
+          score={refresh}
+          note={refresh ? `현재 ${refresh.accuracy.toFixed(2)}% → 목표 ${refresh.targetAccuracy ?? "-"}%` : "갱신 후보가 아직 없습니다."}
+        />
+        <DailyPickCard
+          label="PP 도전"
+          score={challenge}
+          note={challenge ? `${challenge.stars.toFixed(2)}★ · 목표권 추정 ${Math.round(challenge.pp)}pp · 예상 ${challenge.targetAccuracy ?? challenge.accuracy}%` : `${challengeRange.min}~${challengeRange.max}★ 도전 후보가 아직 없습니다.`}
+        />
+      </div>
+    </section>
+  );
+}
+
 
 export default function HomePage() {
   const [player, setPlayer] = useState("");
@@ -833,6 +1113,8 @@ export default function HomePage() {
               <strong>{analysis.summary.bestPp.toLocaleString()}pp</strong>
             </article>
           </section>
+
+          <DailyPicks analysis={analysis} />
 
           <RecommendationTabs analysis={analysis} />
 

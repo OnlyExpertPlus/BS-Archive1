@@ -217,29 +217,42 @@ function makeRefreshCandidates(top: NormalizedScore[], limit = 10) {
       const starAvg = bucketAvg.get(Math.floor(s.stars)) ?? s.accuracy;
       const weaknessGap = Math.max(0, starAvg - s.accuracy);
       const targetAccuracy = targetForRecord(s.accuracy, starAvg, ageDays);
-      const top50Influence = Math.max(0, 50 - index) / 50;
-      const oldRecordBonus = Math.min(4, ageDays / 120);
-      const anomalyBonus =
-        weaknessGap >= 5 ? weaknessGap * 1.8 : weaknessGap * 1.2;
       const targetPp = scoreSaberPp(s.stars, targetAccuracy);
       const estimatedGainPp = gainIfReplaced(currentPps, index, targetPp);
+      const ageBonus = Math.min(10, ageDays / 60);
+      const lowScoreBonus =
+        weaknessGap >= 5
+          ? weaknessGap * 18
+          : weaknessGap >= 3
+            ? weaknessGap * 13
+            : weaknessGap * 7;
+      const topInfluenceBonus = Math.max(0, 80 - index) / 80;
+      const highAccPenalty =
+        s.accuracy >= 97 && weaknessGap < 0.5
+          ? 18
+          : s.accuracy >= 95.5 && weaknessGap < 0.35
+            ? 8
+            : 0;
+
       const priority =
-        anomalyBonus +
-        top50Influence * 2.0 +
-        oldRecordBonus +
-        s.pp / 400 +
-        estimatedGainPp * 2.2;
+        lowScoreBonus +
+        estimatedGainPp * 7.5 +
+        ageBonus +
+        topInfluenceBonus * 1.2 -
+        highAccPenalty;
 
       const reasons: string[] = [];
       if (weaknessGap >= 5)
-        reasons.push(`${Math.floor(s.stars)}★대 평균보다 크게 낮은 예외 기록`);
-      else if (weaknessGap >= 0.35)
-        reasons.push(
-          `${Math.floor(s.stars)}★대 평균보다 ${round(weaknessGap)}%p 낮음`,
-        );
-      if (ageDays >= 180) reasons.push(`${Math.floor(ageDays)}일 전 기록`);
-      if (index < 50) reasons.push("Top 50 영향권 기록");
-      if (!reasons.length) reasons.push("소폭 갱신 후보");
+        reasons.push(`${Math.floor(s.stars)}★대 평균보다 ${round(weaknessGap)}%p 낮은 기록`);
+      else if (weaknessGap >= 1)
+        reasons.push(`${Math.floor(s.stars)}★대 평균보다 ${round(weaknessGap)}%p 낮음`);
+      else if (estimatedGainPp >= 1)
+        reasons.push("예상 총 PP 증가 후보");
+      else
+        reasons.push("소폭 갱신 후보");
+      if (ageDays >= 90) reasons.push(`${Math.floor(ageDays)}일 전 기록`);
+      if (index >= 50) reasons.push("Top 50 밖 기록 점검");
+      else if (index < 50) reasons.push("Top 50 영향권 기록");
 
       return {
         ...s,
@@ -254,7 +267,6 @@ function makeRefreshCandidates(top: NormalizedScore[], limit = 10) {
     .sort((a, b) => b.priority - a.priority)
     .slice(0, limit);
 }
-
 function makeOldCandidates(top: NormalizedScore[], limit = 10) {
   const ranked = top.filter((s) => s.ranked && s.timeSet);
   const bucketAvg = avgByStarBucket(ranked);
@@ -301,7 +313,7 @@ function makeOldCandidates(top: NormalizedScore[], limit = 10) {
         0,
         (Date.now() - new Date(s.timeSet).getTime()) / 86400000,
       );
-      return ageDays >= 90;
+      return ageDays >= 7;
     })
     .sort((a, b) => b.priority - a.priority)
     .slice(0, limit);
@@ -727,18 +739,30 @@ function makeOnePpEfficiencyCandidates(top: NormalizedScore[], limit = 10) {
     .slice(0, limit) as Array<NormalizedScore & { priority: number }>;
 }
 
+
+function mergeRankedScores(scores: NormalizedScore[]) {
+  const byKey = new Map<string, NormalizedScore>();
+  scores.forEach((score) => {
+    if (!score.ranked) return;
+    const key = `${score.leaderboardId ?? ""}:${score.difficulty}:${score.songHash ?? ""}`;
+    const old = byKey.get(key);
+    if (!old || score.pp > old.pp || score.accuracy > old.accuracy) {
+      byKey.set(key, score);
+    }
+  });
+  return [...byKey.values()].sort((a, b) => b.pp - a.pp);
+}
+
 export function analyze(
   player: ScoreSaberPlayer,
   topScores: ScoreSaberScore[],
   recentScores: ScoreSaberScore[],
   rankedLeaderboards: ScoreSaberLeaderboard[] = [],
 ) {
-  const top = normalize(topScores)
-    .filter((s) => s.ranked)
-    .sort((a, b) => b.pp - a.pp);
   const recent = normalize(recentScores).sort(
     (a, b) => new Date(b.timeSet).getTime() - new Date(a.timeSet).getTime(),
   );
+  const top = mergeRankedScores([...normalize(topScores), ...recent]);
   const ranked = top.filter((s) => s.ranked);
   const accuracies = ranked.map((s) => s.accuracy).filter(Boolean);
 
@@ -765,7 +789,7 @@ export function analyze(
     top50: top.slice(0, 50),
     recent: recent.slice(0, 20),
     starBuckets: groupByStar(ranked),
-    refreshCandidates: makeRefreshCandidates(top, 10),
+    refreshCandidates: makeRefreshCandidates(top, 300),
     tryCandidates: makeTryCandidates(
       top,
       rankedLeaderboards,
@@ -773,7 +797,7 @@ export function analyze(
       500,
     ),
     onePpCandidates: makeOnePpEfficiencyCandidates(top, 10),
-    oldCandidates: makeOldCandidates(top, 10),
+    oldCandidates: makeOldCandidates(top, 300),
     ppRecords: ranked.map((score) => score.pp).filter((pp) => pp > 0),
     ppNotice:
       "추천곡의 추정 PP와 예상 증가량은 ScoreSaber PP 커브 기반 계산값이며, 실제 ScoreSaber 반영 PP와 다를 수 있습니다.",
